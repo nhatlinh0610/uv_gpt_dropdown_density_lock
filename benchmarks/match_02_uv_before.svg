@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="610" height="620" viewBox="0 0 610 620">
+<title>MATCH-02 ordered UV boundary evidence</title>
+<rect width="100%" height="100%" fill="#10151c"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif}.outer{fill:none;stroke-width:3}.hole{fill:none;stroke-width:2;stroke-dasharray:7 5}.legend{font-size:15px}.label{font-size:18px;font-weight:600}</style>
+<rect x="20" y="54" width="570" height="520" rx="8" fill="#18222e" stroke="#34495e"/>
+<text class="label" x="38" y="32" fill="#ecf0f1">Before operator</text>
+<path class="outer" d="M 56.000,274.952 L 75.477,360.759 L 313.987,538.000 L 554.000,349.264 L 554.000,265.137 L 125.503,90.004 Z" stroke="#4db6ff"/>
+<text class="legend" x="38" y="84" fill="#4db6ff">target: outer solid / holes dashed</text>
+<path class="outer" d="M 56.000,274.952 L 75.477,360.759 L 313.987,538.000 L 554.000,349.264 L 554.000,265.132 L 125.469,90.000 Z" stroke="#ff9f43"/>
+<text class="legend" x="38" y="108" fill="#ff9f43">candidate: outer solid / holes dashed</text>
+<text class="legend" x="20" y="602" fill="#bdc3c7">Ordered UV boundary evidence; blue=target, orange=candidate. Geometry only; no aesthetic claim.</text>
+</svg>

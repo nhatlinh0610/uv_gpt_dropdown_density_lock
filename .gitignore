@@ -1,0 +1,16 @@
+﻿# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Blender backups and temp
+*.blend1
+*.blend2
+*.tmp
+
+# Test runtimes and cached binaries (>100MB exceeds GitHub limit)
+.test_runtime/
+
+# Benchmark logs and heavy matrix dumps (>100MB exceeds GitHub limit)
+benchmarks/*.log
+benchmarks/*.json

@@ -1,0 +1,58 @@
+# Quy tắc workspace — uv GPT
+
+## Phạm vi và mục tiêu
+
+- Loại dự án: Blender add-on viết bằng Python, dạng package.
+- Target runtime: Blender `>= 3.6.0`; metadata hiện tại là uv GPT `1.2.6`.
+- Add-on làm việc với UV của mesh trong UV Editor; không suy đoán hoặc ghi thêm
+  behavior chưa được kiểm chứng từ source/runtime.
+- Project không phải Git repository. Không commit trong các task thông thường.
+
+## Bản đồ project
+
+- Source of truth: `uv_gpt/*.py`.
+- Artifact phân phối hiện tại: `uv_gpt_v1.2.6.zip`; `uv_gpt_v1.2.5.zip` được giữ nguyên.
+- Tài liệu người dùng: `README.md`.
+- Trạng thái và evidence: `CURRENT_STATE.md`.
+- Error memory: `AI_ERROR_LOG.md`.
+- Context lâu dài: `.context/INDEX.md`, `.context/FEATURE_TEMPLATE.md`,
+  `.context/features/`.
+
+## Bảo toàn và phạm vi thay đổi
+
+- Giữ nguyên version, `bl_info`, cấu trúc package và artifact ZIP nếu task không
+  yêu cầu rõ việc thay đổi chúng.
+- Không hand-edit ZIP; sửa source rồi package lại chỉ khi được yêu cầu.
+- Không xóa hoặc ghi đè thay đổi sẵn có của người dùng. Không thêm dependency
+  mới nếu chưa có lý do và kiểm tra tương thích Blender.
+- Các thao tác UV có thể thay đổi dữ liệu mesh; tài liệu và code phải nhắc
+  backup/test trên bản sao khi phù hợp.
+
+## Validation tối thiểu
+
+- Compile/syntax: kiểm tra toàn bộ `uv_gpt/*.py` bằng Python/Blender Python;
+  ưu tiên compile trong memory hoặc dọn `__pycache__` sau kiểm tra.
+- Import/register: khi có Blender executable, chạy smoke test background phù
+  hợp cho package; nếu không có Blender thì ghi rõ `not run`, không gọi đó là
+  live validation.
+- Focused regression: sau thay đổi behavior, kiểm tra đúng operator/UI flow
+  bị ảnh hưởng trên một `.blend` test riêng; không dùng default scene để thay
+  cho test case đã xác định.
+- ZIP structure: xác nhận ZIP có package `uv_gpt/`, đủ các file source cần
+  thiết, không có path ngoài ý muốn, và version khớp metadata khi task liên
+  quan đến artifact.
+- Onboarding/context: chạy
+  `E:\OneDrive\AI_Rules\scripts\check-ai-project.ps1 -ProjectRoot .`
+  ở handoff onboarding/release hoặc khi context scaffold thay đổi.
+
+## Quy tắc docs và context
+
+- `README.md` giữ hướng dẫn cài đặt, mở UI, workflow cơ bản, backup và
+  enable/disable/reload bằng tiếng Việt.
+- `CURRENT_STATE.md` chỉ ghi facts có anchor trong source hoặc evidence từ
+  command/test; tách rõ `not run` và giới hạn Blender live.
+- `.context/INDEX.md` chỉ lập bản đồ các workflow/module đang tồn tại.
+  Chỉ tạo capsule trong `.context/features/` khi một feature thực sự được
+  thay đổi hoặc cần knowledge bền vững; không tạo spec giả cho mọi nút.
+- `AI_ERROR_LOG.md` chỉ giữ issue đang mở hoặc bị block. Không ghi regression
+  cho một lần validation thành công hay một lỗi tooling không phải product.
