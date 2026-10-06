@@ -1,4 +1,13 @@
 import math
+import json
+import os
+from pathlib import Path
+import pickle
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
 from collections import Counter, OrderedDict, defaultdict
 import secrets
 import time
@@ -10,13 +19,16 @@ from mathutils import Vector
 from . import (
     island_tools,
     match_scheduler,
+    overlay,
     pro_process_adapter,
     pro_process_payload,
     pro_process_pipeline,
     pro_candidate_planner,
     pro_process_pool,
+    pro_process_runtime,
     pro_process_shape,
     pro_shape_state,
+    pro_snap,
     pro_group_first,
     pro_verified_nearest,
     pro_worker,
@@ -43,6 +55,7 @@ _PRO_SYNC_WALL_TIME_BUDGET_MS = 30_000.0
 _PRO_CORRESPONDENCE_MAX_SEARCH = 1024
 _PRO_COOPERATIVE_YIELD_EVERY = 64
 _PRO_MODAL_TICK_ACTIVE_BUDGET_MS = 12.0
+_PRO_FAST_MODAL_TICK_ACTIVE_BUDGET_MS = 4.0
 _PRO_EXACT_SLICE_BUDGET_MS = 10.0
 _PRO_EXACT_OPERATION_BUDGET = 256
 _PRO_SHAPE_OPERATION_BUDGET = 64
@@ -90,6 +103,221 @@ _PRO_REJECTION_SAMPLE_LIMIT = 8
 _PRO_GROUP_SAMPLE_LIMIT = 16
 _ACTIVE_PRO_SESSION = None
 _ACTIVE_PRO_OPERATOR = None
+_ACTIVE_FAST_BACKGROUND_JOB = None
+_FAST_BACKGROUND_TIMER_RUNNING = False
+_ACTIVE_PRO_EXACT_V2_JOB = None
+_PRO_EXACT_V2_TIMER_RUNNING = False
+_FAST_BACKGROUND_TIMER_INTERVAL = 0.03
+_FAST_BACKGROUND_WAIT_INTERVAL = 0.20
+_FAST_BACKGROUND_PREP_BUDGET_MS = 8.0
+
+
+def _v2_rna_pointer(value):
+    """Return a stable Blender RNA pointer when the object exposes one."""
+
+    try:
+        return int(value.as_pointer())
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _v2_source_identity_matches(job, obj):
+    """Reject a same-name object or mesh that replaced the captured source."""
+
+    for reference_key, pointer_key in (("_object_ref", "object_pointer"), ("_data_ref", "data_pointer")):
+        reference = job.get(reference_key)
+        pointer = job.get(pointer_key)
+        if reference is not None and pointer is not None and _v2_rna_pointer(reference) != pointer:
+            return False
+    expected_object_pointer = job.get("object_pointer")
+    if expected_object_pointer is not None:
+        if _v2_rna_pointer(obj) != expected_object_pointer:
+            return False
+    else:
+        expected_object_ref = job.get("_object_ref")
+        if expected_object_ref is not None and obj is not expected_object_ref:
+            return False
+
+    data = getattr(obj, "data", None)
+    expected_data_pointer = job.get("data_pointer")
+    if expected_data_pointer is not None:
+        if _v2_rna_pointer(data) != expected_data_pointer:
+            return False
+    else:
+        expected_data_ref = job.get("_data_ref")
+        if expected_data_ref is not None and data is not expected_data_ref:
+            return False
+
+    expected_data_name = str(job.get("data_name", "") or "")
+    if expected_data_name and str(getattr(data, "name", "") or "") != expected_data_name:
+        return False
+    return True
+
+
+def _v2_pack_background_job():
+    """Read Pack V2's active job without importing it during module startup."""
+
+    module = sys.modules.get("uv_gpt.pack_tools")
+    if module is None and __package__:
+        module = sys.modules.get(f"{__package__}.pack_tools")
+    return getattr(module, "_ACTIVE_PACK_V2_JOB", None) if module is not None else None
+
+
+def _v2_allowed_write_keys(job):
+    """Return selected-island loop keys for a Fast/Pro V2 snapshot.
+
+    The external result is treated as untrusted at the Blender boundary.  The
+    pure Fast island builder is reused here so a selected UV-connected island
+    remains writable even when only some of its faces carry the selection bit.
+    """
+
+    if "_allowed_write_keys" in job:
+        return job["_allowed_write_keys"]
+    snapshot = job.get("snapshot")
+    if not isinstance(snapshot, dict):
+        job["_allowed_write_keys"] = None
+        return None
+    try:
+        from . import fast_v2_core
+
+        fast_snapshot = dict(snapshot)
+        fast_snapshot["schema"] = "fast-v2-snapshot-v1"
+        allowed = set()
+        for island in fast_v2_core.build_uv_islands(fast_snapshot):
+            if island.selected:
+                allowed.update((int(face), int(local)) for face, local in island.loop_keys)
+    except (AttributeError, ImportError, KeyError, TypeError, ValueError, RuntimeError):
+        allowed = None
+    job["_allowed_write_keys"] = allowed
+    return allowed
+
+
+def _v2_stage_writes(job, bm, uv_layer, writes, *, allowed_keys=None, face_keys=None):
+    """Validate every write before returning live BMesh assignments."""
+
+    if writes is None or not isinstance(writes, (tuple, list)):
+        return None
+    if allowed_keys is None:
+        allowed_keys = _v2_allowed_write_keys(job)
+    if allowed_keys is None:
+        return None
+    target_faces = None if face_keys is None else set(face_keys)
+    staged = []
+    seen = set()
+    try:
+        bm.faces.ensure_lookup_table()
+        for record in writes:
+            if not isinstance(record, (tuple, list)) or len(record) != 4:
+                return None
+            face_index, local_index, u, v = record
+            if (
+                isinstance(face_index, bool)
+                or isinstance(local_index, bool)
+                or not isinstance(face_index, int)
+                or not isinstance(local_index, int)
+            ):
+                return None
+            key = (int(face_index), int(local_index))
+            if key in seen or key not in allowed_keys:
+                return None
+            if target_faces is not None and key[0] not in target_faces:
+                return None
+            if face_index < 0 or face_index >= len(bm.faces):
+                return None
+            loops = tuple(bm.faces[face_index].loops)
+            if local_index < 0 or local_index >= len(loops):
+                return None
+            u = float(u)
+            v = float(v)
+            if not math.isfinite(u) or not math.isfinite(v):
+                return None
+            seen.add(key)
+            staged.append((key, loops[local_index], u, v))
+    except (AttributeError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError, OverflowError):
+        return None
+    return tuple(staged)
+
+
+def _v2_reap_process(process, timeout=0.05):
+    """Terminate and reap a worker without an unbounded owner-thread wait."""
+
+    if process is None:
+        return
+    try:
+        if process.poll() is not None:
+            return
+    except (AttributeError, OSError, RuntimeError):
+        return
+    try:
+        process.terminate()
+    except (AttributeError, OSError, RuntimeError):
+        pass
+    try:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except (AttributeError, OSError, RuntimeError, TypeError):
+        return
+    try:
+        process.kill()
+    except (AttributeError, OSError, RuntimeError):
+        return
+    try:
+        process.wait(timeout=timeout)
+    except (AttributeError, OSError, RuntimeError, TypeError, subprocess.TimeoutExpired):
+        pass
+
+
+def _v2_cancel_external_job(job, reason="cancelled"):
+    """Set cancellation before publication and reap any published process."""
+
+    process = _v2_mark_job_cancelled(job)
+    _v2_reap_process(process)
+    if "terminal_state" not in job:
+        job["terminal_state"] = "source_invalid" if str(reason).startswith("source_") else "cancelled"
+    if "terminal_error" not in job:
+        job["terminal_error"] = str(reason)
+
+
+def _v2_mark_job_cancelled(job):
+    """Mark cancellation under the launch lock and return the process handle."""
+
+    lock = job.get("_launch_lock")
+    if lock is None:
+        job["cancelled"] = True
+        process = job.get("process")
+    else:
+        with lock:
+            job["cancelled"] = True
+            process = job.get("process")
+    return process
+
+
+def _v2_publish_process(job, process):
+    """Publish a launched process only while the job admission lock is held."""
+
+    lock = job.get("_launch_lock")
+    if lock is None:
+        if job.get("cancelled"):
+            _v2_reap_process(process)
+            return False
+        job["process"] = process
+        job["pid"] = int(process.pid)
+        job["state"] = "worker"
+        return True
+    with lock:
+        if job.get("cancelled"):
+            should_stop = True
+        else:
+            job["process"] = process
+            job["pid"] = int(process.pid)
+            job["state"] = "worker"
+            should_stop = False
+    if should_stop:
+        _v2_reap_process(process)
+        return False
+    return True
 
 
 def _island_face_key(island):
@@ -1164,6 +1392,38 @@ def _pro_exact_write_values(master_loops, candidate_loops, correspondence, uv_la
                 (float(uv.x), float(uv.y)),
             )
         )
+    return tuple(staged)
+
+
+def _pro_exact_write_values_snapshot(capture, master_loop_keys, candidate_loop_keys, correspondence):
+    """Stage exact UV copies from immutable snapshot primitives only."""
+
+    if not getattr(correspondence, "accepted", False):
+        return None
+    material = getattr(capture, "material", None)
+    loop_by_key = getattr(material, "loop_by_key", None) if material is not None else None
+    if loop_by_key is None:
+        return None
+    master_keys = set(master_loop_keys)
+    candidate_keys = set(candidate_loop_keys)
+    mapping = tuple(getattr(correspondence, "loop_mapping", ()))
+    if len(mapping) != len(candidate_keys) or len(mapping) != len(master_keys):
+        return None
+    if {pair[0] for pair in mapping} != candidate_keys:
+        return None
+    if {pair[1] for pair in mapping} != master_keys:
+        return None
+    if len({pair[0] for pair in mapping}) != len(mapping):
+        return None
+    if len({pair[1] for pair in mapping}) != len(mapping):
+        return None
+    staged = []
+    for candidate_key, master_key in sorted(mapping):
+        raw = loop_by_key.get(master_key)
+        if raw is None or len(raw) <= 6:
+            return None
+        uv = raw[6]
+        staged.append((candidate_key, None, (float(uv[0]), float(uv[1]))))
     return tuple(staged)
 
 
@@ -3626,6 +3886,17 @@ class _ProAlignSession:
         self._snapshot_identity = None
         self._process_identity = None
         self._process_options = None
+        self._detached_background = False
+        self._detached_ready_to_apply = False
+        self._detached_object_name = ""
+        self._detached_data_name = ""
+        self._detached_uv_name = ""
+        self._detached_apply_undo_pending = False
+        self._detached_apply_rebound = False
+        self._detached_content_validated = False
+        self._detached_face_count = 0
+        self._detached_edge_count = 0
+        self._detached_vert_count = 0
         self._process_snapshot_builder = None
         self._process_snapshot_capture = None
         self._process_graph_context = None
@@ -6018,18 +6289,24 @@ class _ProAlignSession:
             raise RuntimeError("group-first exact result has no matching pair")
         master_key = tuple(job.master_key)
         member_key = tuple(job.member_key)
-        master_loops = {
-            key: self._process_snapshot_live_loop_map[key]
-            for key in pair.master_loop_keys
-            if key in self._process_snapshot_live_loop_map
-        }
-        member_loops = {
-            key: self._process_snapshot_live_loop_map[key]
-            for key in pair.member_loop_keys
-            if key in self._process_snapshot_live_loop_map
-        }
-        if len(master_loops) != len(pair.master_loop_keys) or len(member_loops) != len(pair.member_loop_keys):
-            raise RuntimeError("group-first exact result references an unknown live loop")
+        if self._detached_background:
+            # Detached Fast owns immutable loop keys only; edit-BMesh loops may
+            # be invalid while the user works elsewhere in Blender.
+            master_loops = {key: key for key in pair.master_loop_keys}
+            member_loops = {key: key for key in pair.member_loop_keys}
+        else:
+            master_loops = {
+                key: self._process_snapshot_live_loop_map[key]
+                for key in pair.master_loop_keys
+                if key in self._process_snapshot_live_loop_map
+            }
+            member_loops = {
+                key: self._process_snapshot_live_loop_map[key]
+                for key in pair.member_loop_keys
+                if key in self._process_snapshot_live_loop_map
+            }
+            if len(master_loops) != len(pair.master_loop_keys) or len(member_loops) != len(pair.member_loop_keys):
+                raise RuntimeError("group-first exact result references an unknown live loop")
         self._inflight = {
             "process": True,
             "token": ("mc4r2e-direct", int(job.job_ordinal)),
@@ -7522,7 +7799,167 @@ class _ProAlignSession:
             return independent
         return min(parent, independent)
 
+    def detach_for_background(self):
+        """Release live edit-BMesh references after the immutable process is running."""
+
+        if not self.process_requested or self._process_snapshot_capture is None:
+            raise RuntimeError("Fast background snapshot is not ready")
+        if self.state != "process_pipeline":
+            raise RuntimeError("Fast background workers are not ready")
+        self._detached_object_name = str(getattr(self.obj, "name", "") or "")
+        data = getattr(self.obj, "data", None)
+        self._detached_data_name = str(getattr(data, "name", "") or "")
+        self._detached_uv_name = str(getattr(self.uv_layer, "name", "") or "")
+        if not self._detached_object_name or not self._detached_uv_name:
+            raise RuntimeError("Fast background source identity is incomplete")
+        self._detached_face_count = len(getattr(self.bm, "faces", ()) or ())
+        self._detached_edge_count = len(getattr(self.bm, "edges", ()) or ())
+        self._detached_vert_count = len(getattr(self.bm, "verts", ()) or ())
+        self._detached_background = True
+        self._detached_ready_to_apply = False
+        self._detached_apply_rebound = False
+        self._detached_content_validated = False
+        # From this point the external pipeline owns only immutable primitive
+        # payloads.  Drop edit-BMesh references so leaving Edit Mode or
+        # switching to another object/workspace cannot invalidate the job.
+        self._staged_writes = [
+            (target_key, None, uv) for target_key, _loop, uv in self._staged_writes
+        ]
+        self._process_snapshot_guard = None
+        self._process_snapshot_live_loop_map.clear()
+        self._key_to_island.clear()
+        self.selected_islands = None
+        self.all_islands = None
+        self.context = None
+        self.bm = None
+        self.uv_layer = None
+
+    def suspend_detached_apply(self):
+        """Return a partially validating Fast result to context-free wait state."""
+
+        if self.done:
+            return
+        self._staged_writes = [
+            (target_key, None, uv) for target_key, _loop, uv in self._staged_writes
+        ]
+        self._process_snapshot_guard = None
+        self.context = None
+        self.bm = None
+        self.uv_layer = None
+        self.selected_islands = None
+        self.all_islands = None
+        self._detached_background = True
+        self._detached_ready_to_apply = True
+        self._detached_apply_rebound = False
+        self._detached_content_validated = False
+        self._detached_apply_undo_pending = False
+        self.state = "detached_wait_apply"
+
+    def try_reattach_detached(self, context):
+        """Rebind immutable Fast writes to a fresh edit BMesh when the user returns."""
+
+        if not self._detached_background or not self._detached_ready_to_apply:
+            return "not_ready"
+        obj = bpy.data.objects.get(self._detached_object_name)
+        if obj is None or obj is not self.obj or getattr(obj, "type", None) != "MESH":
+            return "invalid"
+        if str(getattr(getattr(obj, "data", None), "name", "") or "") != self._detached_data_name:
+            return "invalid"
+        if getattr(obj, "mode", None) != "EDIT":
+            return "wait"
+        active_obj = getattr(context, "edit_object", None) or getattr(context, "object", None)
+        if active_obj is not obj:
+            return "wait"
+        uv_layers = getattr(getattr(obj, "data", None), "uv_layers", None)
+        active_uv = getattr(uv_layers, "active", None) if uv_layers is not None else None
+        if getattr(active_uv, "name", None) != self._detached_uv_name:
+            return "wait"
+        capture = self._process_snapshot_capture
+        material = getattr(capture, "material", None) if capture is not None else None
+        if material is None:
+            return "invalid"
+        try:
+            bm = bmesh.from_edit_mesh(obj.data)
+            bm.faces.ensure_lookup_table()
+            bm.edges.ensure_lookup_table()
+            bm.verts.ensure_lookup_table()
+            bm.faces.index_update()
+            bm.edges.index_update()
+            bm.verts.index_update()
+            uv_layer = bm.loops.layers.uv.get(self._detached_uv_name)
+            if uv_layer is None:
+                return "invalid"
+            if (
+                len(bm.faces) != self._detached_face_count
+                or len(bm.edges) != self._detached_edge_count
+                or len(bm.verts) != self._detached_vert_count
+            ):
+                return "invalid"
+            for raw_face in material.face_payload:
+                face_index = int(raw_face[0])
+                if face_index < 0 or face_index >= len(bm.faces):
+                    return "invalid"
+                if len(bm.faces[face_index].loops) != len(tuple(raw_face[1])):
+                    return "invalid"
+            live_loop_map = {}
+            for key, raw in material.loop_by_key.items():
+                face_index, local_index = int(key[0]), int(key[1])
+                if face_index < 0 or face_index >= len(bm.faces):
+                    return "invalid"
+                face = bm.faces[face_index]
+                if local_index < 0 or local_index >= len(face.loops):
+                    return "invalid"
+                loop = face.loops[local_index]
+                if int(loop.edge.index) != int(raw[2]) or int(loop.vert.index) != int(raw[3]):
+                    return "invalid"
+                current_uv = loop[uv_layer].uv
+                source_uv = raw[6]
+                if (
+                    abs(float(current_uv.x) - float(source_uv[0])) > 1.0e-12
+                    or abs(float(current_uv.y) - float(source_uv[1])) > 1.0e-12
+                ):
+                    return "invalid"
+                live_loop_map[key] = loop
+            for raw_edge in material.edge_payload:
+                edge_index = int(raw_edge[0])
+                if edge_index < 0 or edge_index >= len(bm.edges):
+                    return "invalid"
+                edge = bm.edges[edge_index]
+                linked_faces = tuple(sorted(int(face.index) for face in edge.link_faces))
+                if linked_faces != tuple(int(value) for value in raw_edge[2]):
+                    return "invalid"
+                if bool(getattr(edge, "seam", False)) != bool(raw_edge[5]):
+                    return "invalid"
+            islands = []
+            for _face_keys, loop_keys in material.island_face_keys:
+                island = tuple(live_loop_map.get(key) for key in loop_keys)
+                if any(loop is None for loop in island):
+                    return "invalid"
+                islands.append(island)
+            rebound = []
+            for target_key, _loop, uv in self._staged_writes:
+                loop = live_loop_map.get(target_key)
+                if loop is None:
+                    return "invalid"
+                rebound.append((target_key, loop, uv))
+        except (AttributeError, IndexError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return "wait"
+        self.context = context
+        self.bm = bm
+        self.uv_layer = uv_layer
+        self.all_islands = tuple(islands)
+        self._staged_writes = rebound
+        self._process_snapshot_guard = None
+        self._detached_background = False
+        self._detached_apply_rebound = True
+        self._detached_content_validated = True
+        self._detached_apply_undo_pending = True
+        self.state = "finish"
+        return "ready"
+
     def _process_snapshot_is_current(self, *, force=False):
+        if self._detached_background:
+            return True
         if not self.process_requested or self._process_identity is None:
             return True
         if not _pro_session_context_valid(
@@ -7549,6 +7986,8 @@ class _ProAlignSession:
     def _advance_process_snapshot_validation(self):
         """Advance mandatory pre-apply identity verification without a full scan."""
 
+        if self._detached_background:
+            return "valid"
         guard = self._process_snapshot_guard
         if guard is None:
             return "valid"
@@ -8172,12 +8611,20 @@ class _ProAlignSession:
                 )
                 return True
 
-            staged = _pro_exact_write_values(
-                master_loops,
-                candidate_loops,
-                exact_result,
-                self.uv_layer,
-            )
+            if self._detached_background:
+                staged = _pro_exact_write_values_snapshot(
+                    self._process_snapshot_capture,
+                    master_loops,
+                    candidate_loops,
+                    exact_result,
+                )
+            else:
+                staged = _pro_exact_write_values(
+                    master_loops,
+                    candidate_loops,
+                    exact_result,
+                    self.uv_layer,
+                )
             if staged is None:
                 self._reject(
                     master_key,
@@ -8252,6 +8699,16 @@ class _ProAlignSession:
         self._batch_iterator = None
 
     def _snapshots_unchanged(self):
+        if self._detached_apply_rebound:
+            return bool(
+                self._detached_content_validated
+                and _pro_session_context_valid(
+                    self.context,
+                    self.obj,
+                    self.bm,
+                    self.uv_layer,
+                )
+            )
         if not _pro_session_context_valid(
             self.context,
             self.obj,
@@ -8537,6 +8994,12 @@ class _ProAlignSession:
                 self._complete_without_apply()
                 return
             apply_started = time.perf_counter()
+            if self._detached_apply_undo_pending:
+                try:
+                    bpy.ops.ed.undo_push(message="UV GPT Fast")
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    pass
+                self._detached_apply_undo_pending = False
             try:
                 applied_loop_count = _pro_apply_staged_writes(
                     self.obj,
@@ -8848,6 +9311,10 @@ class _ProAlignSession:
                         if correspondence_count >= max_correspondence:
                             break
                 elif self.state == "finish":
+                    if self._detached_background:
+                        self._detached_ready_to_apply = True
+                        self.state = "detached_wait_apply"
+                        break
                     if (
                         self.process_requested
                         and self._process_snapshot_guard is not None
@@ -9126,6 +9593,83 @@ def _align_selected_similar_pro(
         modal=False,
     )
     return session.run_to_completion()
+
+
+def _align_selected_force_snap_pro(
+    context,
+    obj,
+    bm,
+    uv_layer,
+    selected_islands,
+):
+    """Force-stack topology-compatible islands onto the largest UV master.
+
+    This path intentionally does not use shape-similarity tolerance.  It builds
+    an exact topology graph for every selected island, chooses the largest
+    actual UV polygon area as master inside each compatible topology group, and
+    stages exact master UV coordinates for every mapped target loop.
+    """
+
+    del context
+    records = []
+    loop_maps = {}
+    invalid_count = 0
+
+    for island in sorted(selected_islands, key=_island_face_key):
+        island_key = _island_face_key(island)
+        uv_area = _pro_uv_area_for_island(island, uv_layer)
+        if uv_area is None:
+            invalid_count += 1
+            continue
+        try:
+            graph, loop_by_key = _pro_graph_for_island(island, uv_layer)
+        except (RuntimeError, TypeError, ValueError):
+            invalid_count += 1
+            continue
+        records.append(
+            pro_snap.SnapIslandRecord(
+                key=island_key,
+                uv_area=uv_area,
+                graph=graph,
+            )
+        )
+        loop_maps[island_key] = loop_by_key
+
+    if len(records) < 2:
+        return 0, len(records), invalid_count
+
+    plan = pro_snap.plan_force_snap(records)
+    snapshot = _pro_snapshot_uvs(bm, uv_layer)
+    staged_writes = []
+    snapped_islands = 0
+
+    for pair in plan.pairs:
+        master_loops = loop_maps.get(pair.master_key)
+        candidate_loops = loop_maps.get(pair.candidate_key)
+        if master_loops is None or candidate_loops is None:
+            invalid_count += 1
+            continue
+        staged = _pro_exact_write_values(
+            master_loops,
+            candidate_loops,
+            pair.correspondence,
+            uv_layer,
+        )
+        if staged is None:
+            invalid_count += 1
+            continue
+        staged_writes.extend(staged)
+        snapped_islands += 1
+
+    _pro_apply_staged_writes(
+        obj,
+        bm,
+        uv_layer,
+        staged_writes,
+        snapshot,
+    )
+    invalid_count += len(plan.skipped_keys)
+    return snapped_islands, plan.group_count, invalid_count
 
 
 def _align_selected_similar(
@@ -9432,7 +9976,11 @@ class UVGPT_OT_paste_keep_position(bpy.types.Operator):
             uv_layer = island_tools.get_active_uv_layer(bm, obj)
             bm.faces.ensure_lookup_table()
             bm.faces.index_update()
-            selected = island_tools.get_selected_uv_islands(bm, uv_layer)
+            selected = island_tools.get_selected_uv_islands_for_context(
+                context,
+                bm,
+                uv_layer,
+            )
             if not selected:
                 self.report({"ERROR"}, "Select one or more target UV islands.")
                 return {"CANCELLED"}
@@ -9693,11 +10241,1241 @@ def _pro_modal_progress_end(context):
         status_set(None)
 
 
+def _fast_selection_center(session):
+    """Return the center of the UV selection captured before Fast detaches."""
+
+    uv_layer = getattr(session, "uv_layer", None)
+    islands = getattr(session, "selected_islands", None) or ()
+    coords = []
+    if uv_layer is None:
+        return (0.5, 0.5)
+    for island in islands:
+        for loop in island:
+            try:
+                uv = loop[uv_layer].uv
+                coords.append((float(uv.x), float(uv.y)))
+            except (AttributeError, KeyError, ReferenceError, RuntimeError, TypeError):
+                continue
+    if not coords:
+        return (0.5, 0.5)
+    min_u = min(value[0] for value in coords)
+    max_u = max(value[0] for value in coords)
+    min_v = min(value[1] for value in coords)
+    max_v = max(value[1] for value in coords)
+    return ((min_u + max_u) * 0.5, (min_v + max_v) * 0.5)
+
+
+def _fast_progress_values(session):
+    """Return stable progress values for the detached Fast UI."""
+
+    report = getattr(session, "report", {}) or {}
+    selected = max(1, int(report.get("selected_count", 0) or 0))
+    pair_done = max(0, int(report.get("candidate_pairs_processed", 0) or 0))
+    pair_total = max(pair_done, int(report.get("candidate_pairs_planned", 0) or 0))
+    exact_done = max(0, int(report.get("direct_exact_jobs_completed", 0) or 0))
+    exact_total = max(exact_done, int(report.get("direct_exact_jobs_planned", 0) or 0))
+    stage = str(getattr(session, "state", "prepare") or "prepare")
+    process_stage = str(report.get("process_stage", "") or "")
+
+    if getattr(session, "done", False) or getattr(session, "_detached_ready_to_apply", False):
+        percent = 100.0
+    elif exact_total:
+        percent = 60.0 + 35.0 * min(1.0, exact_done / max(1, exact_total))
+    elif pair_total:
+        percent = 10.0 + 50.0 * min(1.0, pair_done / max(1, pair_total))
+    elif stage in {"process_shutdown", "process_finalization_grace"}:
+        percent = 97.0
+    elif stage == "process_pipeline" or process_stage:
+        percent = 10.0
+    else:
+        percent = 5.0
+
+    if stage == "process_shutdown":
+        percent = max(percent, 97.0)
+    if stage in {"finish", "detached_wait_apply"}:
+        percent = 100.0
+
+    if exact_total:
+        done, total = exact_done, exact_total
+    else:
+        done = pair_done
+        total = max(pair_total, selected)
+    return max(0.0, min(100.0, percent)), done, max(1, total)
+
+
+def _fast_progress_text(session, now=None):
+    """Format center-overlay progress as percent, elapsed seconds and done/total."""
+
+    if now is None:
+        now = time.perf_counter()
+    started = float(getattr(session, "started", now) or now)
+    elapsed = max(0.0, float(now) - started)
+    percent, done, total = _fast_progress_values(session)
+    return f"{percent:.0f}%  •  {elapsed:.1f}s  •  {done}/{total}"
+
+
+def _fast_source_context_matches(session, context):
+    obj = bpy.data.objects.get(getattr(session, "_detached_object_name", ""))
+    if obj is None or obj is not getattr(session, "obj", None):
+        return False
+    if getattr(obj, "mode", None) != "EDIT":
+        return False
+    active_obj = getattr(context, "edit_object", None) or getattr(context, "object", None)
+    if active_obj is not obj:
+        return False
+    uv_layers = getattr(getattr(obj, "data", None), "uv_layers", None)
+    active_uv = getattr(uv_layers, "active", None) if uv_layers is not None else None
+    return getattr(active_uv, "name", None) == getattr(session, "_detached_uv_name", "")
+
+
+def _fast_set_status(job, text):
+    context = bpy.context
+    workspace = getattr(context, "workspace", None)
+    status_set = getattr(workspace, "status_text_set", None)
+    if callable(status_set):
+        try:
+            status_set(text)
+            name = str(getattr(workspace, "name", "") or "")
+            if name:
+                job.setdefault("workspace_names", set()).add(name)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+
+
+def _fast_clear_status(job):
+    for name in tuple(job.get("workspace_names", ())):
+        try:
+            workspace = bpy.data.workspaces.get(name)
+        except (AttributeError, RuntimeError):
+            workspace = None
+        status_set = getattr(workspace, "status_text_set", None)
+        if callable(status_set):
+            try:
+                status_set(None)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+
+
+def _fast_update_progress(job):
+    session = job["session"]
+    text = _fast_progress_text(session)
+    overlay.set_fast_progress(
+        {
+            "object_name": job["object_name"],
+            "uv_map_name": job["uv_map_name"],
+            "center": job["center"],
+            "text": text,
+        }
+    )
+    report = session.report
+    aligned = int(report.get("aligned_exact", 0) or 0)
+    groups = int(report.get("group_count", 0) or 0)
+    stage = str(getattr(session, "state", "prepare") or "prepare")
+    suffix = " — waiting to apply on source UV" if getattr(session, "_detached_ready_to_apply", False) else ""
+    _fast_set_status(job, f"Fast [{stage}]: {text} • {aligned} aligned/{groups} groups{suffix}")
+
+
+def _fast_finish_job(job):
+    global _ACTIVE_PRO_SESSION, _ACTIVE_FAST_BACKGROUND_JOB, _FAST_BACKGROUND_TIMER_RUNNING
+    session = job.get("session")
+    _fast_update_progress(job)
+    _fast_clear_status(job)
+    overlay.clear_fast_progress()
+    if _ACTIVE_PRO_SESSION is session:
+        _ACTIVE_PRO_SESSION = None
+    if _ACTIVE_FAST_BACKGROUND_JOB is job:
+        _ACTIVE_FAST_BACKGROUND_JOB = None
+    _FAST_BACKGROUND_TIMER_RUNNING = False
+
+
+def _fast_background_timer():
+    """Advance detached Fast work without owning any Blender modal context."""
+
+    global _FAST_BACKGROUND_TIMER_RUNNING
+    job = _ACTIVE_FAST_BACKGROUND_JOB
+    if not job:
+        _FAST_BACKGROUND_TIMER_RUNNING = False
+        return None
+    session = job.get("session")
+    if session is None:
+        _fast_finish_job(job)
+        return None
+    try:
+        obj = bpy.data.objects.get(job["object_name"])
+        if obj is None or obj is not getattr(session, "obj", None):
+            if not session.done:
+                session.cancel("source_object_removed")
+        elif session.done:
+            pass
+        elif getattr(session, "_detached_ready_to_apply", False):
+            if getattr(session, "_detached_background", False):
+                reattach = session.try_reattach_detached(bpy.context)
+                if reattach == "invalid":
+                    session.cancel("source_mesh_changed")
+                elif reattach == "wait":
+                    _fast_update_progress(job)
+                    return _FAST_BACKGROUND_WAIT_INTERVAL
+            elif not _fast_source_context_matches(session, bpy.context):
+                session.suspend_detached_apply()
+                _fast_update_progress(job)
+                return _FAST_BACKGROUND_WAIT_INTERVAL
+            if not session.done and not getattr(session, "_detached_background", False):
+                session.step(
+                    active_budget_ms=_PRO_FAST_MODAL_TICK_ACTIVE_BUDGET_MS,
+                    max_correspondence=_PRO_MODAL_MAX_CORRESPONDENCE_PER_TICK,
+                )
+        else:
+            session.step(
+                active_budget_ms=_PRO_FAST_MODAL_TICK_ACTIVE_BUDGET_MS,
+                max_correspondence=_PRO_MODAL_MAX_CORRESPONDENCE_PER_TICK,
+            )
+    except Exception as exc:
+        if not getattr(session, "done", False):
+            try:
+                session.cancel("background_timer_error:%s" % str(exc)[:256])
+            except Exception:
+                pass
+
+    if session.done:
+        _fast_finish_job(job)
+        return None
+    _fast_update_progress(job)
+    if getattr(session, "_detached_ready_to_apply", False):
+        return _FAST_BACKGROUND_WAIT_INTERVAL
+    return _FAST_BACKGROUND_TIMER_INTERVAL
+
+
+def _ensure_fast_background_timer():
+    global _FAST_BACKGROUND_TIMER_RUNNING
+    if _FAST_BACKGROUND_TIMER_RUNNING:
+        return
+    _FAST_BACKGROUND_TIMER_RUNNING = True
+    try:
+        bpy.app.timers.register(
+            _fast_background_timer,
+            first_interval=_FAST_BACKGROUND_TIMER_INTERVAL,
+        )
+    except ValueError:
+        pass
+
+
+def _fast_prepare_background_session(context, evidence):
+    """Capture all Blender-owned input, start workers, then detach from Edit Mode."""
+
+    session = _pro_create_session(
+        context,
+        evidence,
+        modal=False,
+        mode=pro_process_payload.CORRESPONDENCE_MODE_VERIFIED_NEAREST_ONLY,
+        process_worker_count=_PRO_DEFAULT_PROCESS_WORKER_COUNT,
+        process_batch_size=_PRO_DEFAULT_PROCESS_BATCH_SIZE,
+        process_fused=True,
+        process_group_first=True,
+        time_budget_ms=300_000.0,
+    )
+    # Snapshot/enumeration/descriptor capture must finish while the operator
+    # still owns a valid edit BMesh.  Once the immutable process pipeline is
+    # admitted, Fast releases every live BMesh reference and returns control.
+    while not session.done and session.state != "process_pipeline":
+        session.step(
+            active_budget_ms=_FAST_BACKGROUND_PREP_BUDGET_MS,
+            max_correspondence=_PRO_MODAL_MAX_CORRESPONDENCE_PER_TICK,
+        )
+    if session.done:
+        return session, None
+    center = _fast_selection_center(session)
+    object_name = str(getattr(session.obj, "name", "") or "")
+    uv_map_name = str(getattr(session.uv_layer, "name", "") or "")
+    session.detach_for_background()
+    return session, {
+        "session": session,
+        "object_name": object_name,
+        "uv_map_name": uv_map_name,
+        "center": center,
+        "workspace_names": set(),
+    }
+
+
+
+def _fast_v2_capture_snapshot(context):
+    """Copy only primitive mesh/UV data; no island/descriptor work happens here."""
+
+    uv_utils.ensure_destructive_ready(context)
+    obj = uv_utils.get_active_mesh_object(context)
+    bm = island_tools.get_active_bmesh(context)
+    uv_layer = island_tools.get_active_uv_layer(bm, obj)
+    island_tools.validate_uv_selection_scope(context, bm, uv_layer)
+    settings = uv_utils.get_settings(context)
+
+    faces = []
+    selected_points = []
+    for face in bm.faces:
+        selected = bool(
+            island_tools._face_uv_selected_for_context(  # operation-specific UV scope
+                context, bm, face, uv_layer
+            )
+        )
+        loops = []
+        for loop in face.loops:
+            uv = loop[uv_layer].uv
+            value = (
+                int(loop.vert.index),
+                int(loop.edge.index),
+                float(uv.x),
+                float(uv.y),
+            )
+            loops.append(value)
+            if selected and not face.hide:
+                selected_points.append((float(uv.x), float(uv.y)))
+        faces.append((int(face.index), selected, bool(face.hide), tuple(loops)))
+
+    if not selected_points:
+        raise RuntimeError("Fast: select at least one UV island.")
+    min_u = min(point[0] for point in selected_points)
+    max_u = max(point[0] for point in selected_points)
+    min_v = min(point[1] for point in selected_points)
+    max_v = max(point[1] for point in selected_points)
+    center = ((min_u + max_u) * 0.5, (min_v + max_v) * 0.5)
+    snapshot = {
+        "schema": "fast-v2-snapshot-v1",
+        "faces": tuple(faces),
+        "options": {
+            "match_scale": bool(settings.stack_match_scale),
+            "allow_flipping": bool(settings.stack_allow_flipping),
+            "tolerance": max(0.0, float(settings.stack_similarity_tolerance)),
+        },
+    }
+    return obj, bm, uv_layer, snapshot, center
+
+
+def _fast_v2_worker_environment():
+    environment = dict(os.environ)
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        environment[name] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return environment
+
+
+def _fast_v2_creation_flags():
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
+
+
+def _fast_v2_launch_thread(job):
+    """Serialize and launch outside Blender's owner thread."""
+
+    try:
+        work_dir = Path(job["work_dir"])
+        input_path = Path(job["input_path"])
+        output_path = Path(job["output_path"])
+        progress_path = Path(job["progress_path"])
+        with input_path.open("wb") as handle:
+            pickle.dump(job["snapshot"], handle, protocol=5)
+        python_executable = pro_process_runtime.resolve_bundled_python(
+            blender_binary=job["blender_binary"],
+            blender_version=job["blender_version"],
+        )
+        worker_script = Path(__file__).with_name("fast_v2_worker.py").resolve()
+        if not worker_script.is_file():
+            raise RuntimeError("Fast V2 worker script is missing")
+        process = subprocess.Popen(
+            [
+                str(python_executable),
+                str(worker_script),
+                str(input_path),
+                str(output_path),
+                str(progress_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            close_fds=True,
+            env=_fast_v2_worker_environment(),
+            creationflags=_fast_v2_creation_flags(),
+        )
+        if not _v2_publish_process(job, process):
+            return
+        return_code = process.wait()
+        if job.get("cancelled"):
+            return
+        if not output_path.is_file():
+            raise RuntimeError("Fast V2 worker exited without a result")
+        with output_path.open("rb") as handle:
+            payload = pickle.load(handle)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise RuntimeError(str((payload or {}).get("error", "Fast V2 worker failed")))
+        result = payload.get("result")
+        if not isinstance(result, dict) or result.get("schema") != "fast-v2-result-v1":
+            raise RuntimeError("Fast V2 worker returned an invalid result")
+        if return_code not in (0, None):
+            raise RuntimeError("Fast V2 worker exited with code %s" % return_code)
+        job["result"] = result
+        job["state"] = "ready_apply"
+    except BaseException as exc:  # background ownership boundary
+        if not job.get("cancelled"):
+            job["error"] = "%s: %s" % (type(exc).__name__, str(exc))
+            job["state"] = "failed"
+
+
+def _fast_v2_read_progress(job):
+    progress_path = Path(job.get("progress_path", ""))
+    if progress_path.is_file():
+        try:
+            value = json.loads(progress_path.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                job["progress"] = value
+        except (OSError, ValueError, TypeError):
+            pass
+    value = dict(job.get("progress") or {})
+    percent = max(0.0, min(100.0, float(value.get("percent", 0.0) or 0.0)))
+    done = max(0, int(value.get("done", 0) or 0))
+    total = max(1, int(value.get("total", 1) or 1))
+    elapsed = max(0.0, time.perf_counter() - float(job.get("started", time.perf_counter())))
+    stage = str(value.get("stage", job.get("state", "snapshot")) or "snapshot")
+    return percent, elapsed, done, total, stage
+
+
+def _fast_v2_update_progress(job):
+    percent, elapsed, done, total, stage = _fast_v2_read_progress(job)
+    if job.get("state") == "ready_apply":
+        percent = 100.0
+        stage = "waiting_apply"
+    text = f"{percent:.0f}%  •  {elapsed:.1f}s  •  {done}/{total}"
+    overlay.set_fast_progress(
+        {
+            "object_name": job["object_name"],
+            "uv_map_name": job["uv_map_name"],
+            "center": job["center"],
+            "text": text,
+        }
+    )
+    suffix = " — waiting to apply on source UV" if job.get("state") == "ready_apply" else ""
+    result = job.get("result") or {}
+    aligned = int(result.get("aligned_count", 0) or 0)
+    groups = int(result.get("group_count", 0) or 0)
+    _fast_set_status(
+        job,
+        f"Fast [{stage}]: {text} • {aligned} aligned/{groups} groups{suffix}",
+    )
+
+
+def _fast_v2_source_context_state(job, context):
+    """Return ``ready``, ``wait`` or terminal ``invalid`` for a detached job."""
+
+    try:
+        obj = bpy.data.objects.get(job.get("object_name", ""))
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return "invalid"
+    if obj is None or getattr(obj, "type", None) != "MESH":
+        return "invalid"
+    if not _v2_source_identity_matches(job, obj):
+        return "invalid"
+
+    data = getattr(obj, "data", None)
+    uv_layers = getattr(data, "uv_layers", None)
+    captured_name = str(job.get("uv_map_name", "") or "")
+    captured_uv = None
+    try:
+        for layer in uv_layers or ():
+            if getattr(layer, "name", None) == captured_name:
+                captured_uv = layer
+                break
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return "invalid"
+    if captured_uv is None:
+        return "invalid"
+    active_uv = getattr(uv_layers, "active", None) if uv_layers is not None else None
+    if getattr(active_uv, "name", None) != captured_name:
+        return "wait"
+
+    active = getattr(context, "edit_object", None) or getattr(context, "object", None)
+    if active is not obj:
+        obj_pointer = _v2_rna_pointer(obj)
+        active_pointer = _v2_rna_pointer(active)
+        if obj_pointer is None or active_pointer != obj_pointer:
+            return "wait"
+    if getattr(obj, "mode", None) != "EDIT":
+        return "wait"
+    return "ready"
+
+
+def _fast_v2_source_context_matches(job, context):
+    return _fast_v2_source_context_state(job, context) == "ready"
+
+
+def _fast_v2_snapshot_unchanged(job, bm, uv_layer):
+    """Validate topology + source UV values immediately before atomic apply."""
+
+    snapshot_faces = job["snapshot"].get("faces", ())
+    if len(bm.faces) != len(snapshot_faces):
+        return False
+    if len(bm.edges) != int(job.get("edge_count", len(bm.edges))):
+        return False
+    if len(bm.verts) != int(job.get("vert_count", len(bm.verts))):
+        return False
+    bm.faces.ensure_lookup_table()
+    for record in snapshot_faces:
+        face_index, _selected, _hidden, source_loops = record
+        if face_index < 0 or face_index >= len(bm.faces):
+            return False
+        face = bm.faces[face_index]
+        loops = tuple(face.loops)
+        if len(loops) != len(source_loops):
+            return False
+        for local_index, (source_vert, source_edge, source_u, source_v) in enumerate(source_loops):
+            loop = loops[local_index]
+            if int(loop.vert.index) != int(source_vert) or int(loop.edge.index) != int(source_edge):
+                return False
+            uv = loop[uv_layer].uv
+            if abs(float(uv.x) - float(source_u)) > 1.0e-8 or abs(float(uv.y) - float(source_v)) > 1.0e-8:
+                return False
+    return True
+
+
+def _fast_v2_apply_result(job):
+    obj = bpy.data.objects.get(job["object_name"])
+    if obj is None:
+        return "invalid"
+    try:
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        bm.faces.index_update()
+        bm.edges.ensure_lookup_table()
+        bm.edges.index_update()
+        bm.verts.ensure_lookup_table()
+        bm.verts.index_update()
+        uv_layer = bm.loops.layers.uv.get(job["uv_map_name"])
+        if uv_layer is None:
+            return "invalid"
+        if not _fast_v2_snapshot_unchanged(job, bm, uv_layer):
+            return "changed"
+        result = job.get("result") or {}
+        if not isinstance(result, dict):
+            return "invalid"
+        writes = result.get("writes", ())
+        if writes is None:
+            writes = ()
+        allowed_keys = _v2_allowed_write_keys(job)
+        staged = _v2_stage_writes(
+            job,
+            bm,
+            uv_layer,
+            writes,
+            allowed_keys=allowed_keys,
+        )
+        if staged is None:
+            return "invalid"
+        if staged:
+            try:
+                bpy.ops.ed.undo_push(message="UV GPT Fast")
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+            for _key, loop, u, v in staged:
+                loop[uv_layer].uv = (u, v)
+            bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+        return "applied"
+    except (AttributeError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError, OverflowError):
+        return "invalid"
+
+
+def _fast_v2_cleanup_files(job):
+    work_dir = job.get("work_dir")
+    if work_dir:
+        try:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def _fast_v2_finish_job(job, terminal_state=None, terminal_error=None):
+    global _ACTIVE_FAST_BACKGROUND_JOB, _FAST_BACKGROUND_TIMER_RUNNING
+    if terminal_state is not None:
+        job["terminal_state"] = str(terminal_state)
+    elif "terminal_state" not in job:
+        job["terminal_state"] = "cancelled" if job.get("cancelled") else "finished"
+    if terminal_error is not None:
+        job["terminal_error"] = str(terminal_error)
+    elif "terminal_error" not in job and job.get("error"):
+        job["terminal_error"] = str(job.get("error"))
+    if job.get("cancelled"):
+        _v2_reap_process(job.get("process"))
+    _fast_clear_status(job)
+    overlay.clear_fast_progress()
+    _fast_v2_cleanup_files(job)
+    if _ACTIVE_FAST_BACKGROUND_JOB is job:
+        _ACTIVE_FAST_BACKGROUND_JOB = None
+    _FAST_BACKGROUND_TIMER_RUNNING = False
+
+
+def _fast_v2_cancel_job(job, reason="cancelled"):
+    if not job:
+        return
+    _v2_cancel_external_job(job, reason)
+    terminal_state = "source_invalid" if str(reason).startswith("source_") else "cancelled"
+    _fast_v2_finish_job(job, terminal_state=terminal_state, terminal_error=reason)
+
+
+def _fast_v2_background_timer():
+    global _FAST_BACKGROUND_TIMER_RUNNING
+    job = _ACTIVE_FAST_BACKGROUND_JOB
+    if not job or job.get("kind") != "fast_v2":
+        _FAST_BACKGROUND_TIMER_RUNNING = False
+        return None
+    source_state = _fast_v2_source_context_state(job, bpy.context)
+    if source_state == "invalid":
+        _fast_v2_cancel_job(job, "source_invalid")
+        return None
+    _fast_v2_update_progress(job)
+    if job.get("error") or job.get("state") == "failed":
+        print("UV GPT Fast V2 failed:", job.get("error", "unknown worker failure"))
+        _fast_v2_finish_job(
+            job,
+            terminal_state="failed",
+            terminal_error=job.get("error", "unknown worker failure"),
+        )
+        return None
+    if job.get("state") != "ready_apply":
+        return _FAST_BACKGROUND_TIMER_INTERVAL
+    if source_state != "ready":
+        return _FAST_BACKGROUND_WAIT_INTERVAL
+    apply_state = _fast_v2_apply_result(job)
+    if apply_state == "applied":
+        _fast_v2_finish_job(job, terminal_state="applied")
+        return None
+    if apply_state == "changed":
+        print("UV GPT Fast V2 discarded: source UV/topology changed during background work.")
+        _fast_v2_finish_job(job, terminal_state="changed", terminal_error="source_changed")
+        return None
+    if apply_state == "invalid":
+        print("UV GPT Fast V2 stopped: worker result or source became invalid.")
+        _fast_v2_finish_job(job, terminal_state="invalid", terminal_error="invalid_result_or_source")
+        return None
+    return _FAST_BACKGROUND_WAIT_INTERVAL
+
+
+def _ensure_fast_v2_timer():
+    global _FAST_BACKGROUND_TIMER_RUNNING
+    if _FAST_BACKGROUND_TIMER_RUNNING:
+        return
+    _FAST_BACKGROUND_TIMER_RUNNING = True
+    try:
+        bpy.app.timers.register(
+            _fast_v2_background_timer,
+            first_interval=_FAST_BACKGROUND_TIMER_INTERVAL,
+        )
+    except ValueError:
+        pass
+
+
+def _fast_v2_start_job(context):
+    """Start Fast V2 after one compact owner-thread snapshot and return immediately."""
+
+    global _ACTIVE_FAST_BACKGROUND_JOB
+    if _ACTIVE_FAST_BACKGROUND_JOB is not None:
+        raise RuntimeError("Fast is already running in the background.")
+    if _ACTIVE_PRO_EXACT_V2_JOB is not None:
+        raise RuntimeError("Pro is already running in the background.")
+    if _ACTIVE_PRO_SESSION is not None and not _ACTIVE_PRO_SESSION.done:
+        raise RuntimeError("A Pro stack operation is already active.")
+    if _v2_pack_background_job() is not None:
+        raise RuntimeError("Pack is already running in the background.")
+    obj, bm, uv_layer, snapshot, center = _fast_v2_capture_snapshot(context)
+    work_dir = tempfile.mkdtemp(prefix="uv_gpt_fast_v2_")
+    job = {
+        "kind": "fast_v2",
+        "object_name": str(obj.name),
+        "data_name": str(getattr(obj.data, "name", "")),
+        "uv_map_name": str(getattr(uv_layer, "name", "")),
+        "_object_ref": obj,
+        "_data_ref": getattr(obj, "data", None),
+        "object_pointer": _v2_rna_pointer(obj),
+        "data_pointer": _v2_rna_pointer(getattr(obj, "data", None)),
+        "center": center,
+        "snapshot": snapshot,
+        "edge_count": len(bm.edges),
+        "vert_count": len(bm.verts),
+        "started": time.perf_counter(),
+        "state": "launching",
+        "progress": {"stage": "snapshot", "percent": 1.0, "done": 0, "total": 1},
+        "workspace_names": set(),
+        "work_dir": work_dir,
+        "input_path": str(Path(work_dir) / "input.pkl"),
+        "output_path": str(Path(work_dir) / "output.pkl"),
+        "progress_path": str(Path(work_dir) / "progress.json"),
+        "blender_binary": getattr(getattr(bpy, "app", None), "binary_path", None),
+        "blender_version": getattr(getattr(bpy, "app", None), "version", None),
+        "process": None,
+        "pid": None,
+        "_launch_lock": threading.Lock(),
+        "result": None,
+        "error": None,
+        "cancelled": False,
+    }
+    thread = threading.Thread(
+        target=_fast_v2_launch_thread,
+        args=(job,),
+        name="uv-gpt-fast-v2-launcher",
+        daemon=True,
+    )
+    job["thread"] = thread
+    _ACTIVE_FAST_BACKGROUND_JOB = job
+    thread.start()
+    _fast_v2_update_progress(job)
+    _ensure_fast_v2_timer()
+    return job
+
+
+# -----------------------------------------------------------------------------
+# Pro Exact V2 detached external-process runtime
+# -----------------------------------------------------------------------------
+
+_ACTIVE_PRO_EXACT_V2_JOB = None
+_PRO_EXACT_V2_TIMER_RUNNING = False
+_PRO_EXACT_V2_TIMER_INTERVAL = 0.06
+_PRO_EXACT_V2_WAIT_INTERVAL = 0.20
+_PRO_EXACT_V2_APPLY_BUDGET_MS = 4.0
+_PRO_EXACT_V2_APPLY_MAX_PER_TICK = 8
+_PRO_EXACT_V2_DONE_HOLD_SECONDS = 1.35
+
+
+def _pro_exact_v2_capture_snapshot(context):
+    obj, bm, uv_layer, snapshot, center = _fast_v2_capture_snapshot(context)
+    snapshot = dict(snapshot)
+    snapshot["schema"] = "pro-exact-v2-snapshot-v1"
+    snapshot["options"] = {"max_search": 100000}
+    return obj, bm, uv_layer, snapshot, center
+
+
+def _pro_exact_v2_launch_thread(job):
+    try:
+        input_path = Path(job["input_path"])
+        output_path = Path(job["output_path"])
+        progress_path = Path(job["progress_path"])
+        updates_dir = Path(job["updates_dir"])
+        with input_path.open("wb") as handle:
+            pickle.dump(job["snapshot"], handle, protocol=5)
+        python_executable = pro_process_runtime.resolve_bundled_python(
+            blender_binary=job["blender_binary"],
+            blender_version=job["blender_version"],
+        )
+        worker_script = Path(__file__).with_name("pro_exact_v2_worker.py").resolve()
+        if not worker_script.is_file():
+            raise RuntimeError("Pro Exact V2 worker script is missing")
+        process = subprocess.Popen(
+            [
+                str(python_executable),
+                str(worker_script),
+                str(input_path),
+                str(output_path),
+                str(progress_path),
+                str(updates_dir),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            close_fds=True,
+            env=_fast_v2_worker_environment(),
+            creationflags=_fast_v2_creation_flags(),
+        )
+        if not _v2_publish_process(job, process):
+            return
+        return_code = process.wait()
+        if job.get("cancelled"):
+            return
+        if not output_path.is_file():
+            raise RuntimeError("Pro Exact V2 worker exited without a result")
+        with output_path.open("rb") as handle:
+            payload = pickle.load(handle)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise RuntimeError(str((payload or {}).get("error", "Pro Exact V2 worker failed")))
+        result = payload.get("result")
+        if not isinstance(result, dict) or result.get("schema") != "pro-exact-v2-result-v1":
+            raise RuntimeError("Pro Exact V2 worker returned an invalid result")
+        if return_code not in (0, None):
+            raise RuntimeError("Pro Exact V2 worker exited with code %s" % return_code)
+        job["result"] = result
+        job["state"] = "ready_apply"
+    except BaseException as exc:
+        if not job.get("cancelled"):
+            job["error"] = "%s: %s" % (type(exc).__name__, str(exc))
+            job["state"] = "failed"
+
+
+def _pro_exact_v2_read_progress(job):
+    progress_path = Path(job.get("progress_path", ""))
+    if progress_path.is_file():
+        try:
+            value = json.loads(progress_path.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                job["progress"] = value
+        except (OSError, ValueError, TypeError):
+            pass
+    value = dict(job.get("progress") or {})
+    percent = max(0.0, min(100.0, float(value.get("percent", 0.0) or 0.0)))
+    done = max(0, int(value.get("done", 0) or 0))
+    total = max(1, int(value.get("total", 1) or 1))
+    elapsed = max(0.0, time.perf_counter() - float(job.get("started", time.perf_counter())))
+    stage = str(value.get("stage", job.get("state", "snapshot")) or "snapshot")
+    if job.get("state") == "ready_apply":
+        percent = 100.0
+        stage = "waiting_apply"
+    return percent, elapsed, done, total, stage
+
+
+def _pro_exact_v2_update_progress(job):
+    percent, elapsed, done, total, stage = _pro_exact_v2_read_progress(job)
+    completion_text = job.get("completion_text")
+    if completion_text:
+        text = str(completion_text)
+        stage = "complete"
+    else:
+        text = f"{percent:.0f}%  •  {elapsed:.1f}s  •  {done}/{total}"
+    overlay.set_fast_progress(
+        {
+            "object_name": job["object_name"],
+            "uv_map_name": job["uv_map_name"],
+            "center": job["center"],
+            "text": text,
+        }
+    )
+    try:
+        workspace = getattr(bpy.context, "workspace", None)
+        if workspace is not None:
+            suffix = " — waiting to apply on source UV" if job.get("state") == "ready_apply" and not completion_text else ""
+            workspace.status_text_set(f"Pro Exact V2 [{stage}]: {text}{suffix}")
+    except Exception:
+        pass
+
+
+def _pro_exact_v2_expected_maps(snapshot):
+    expected_uv = {}
+    expected_structure = {}
+    for face_index, _selected, _hidden, source_loops in snapshot.get("faces", ()):
+        for local_index, (source_vert, source_edge, source_u, source_v) in enumerate(source_loops):
+            key = (int(face_index), int(local_index))
+            expected_uv[key] = (float(source_u), float(source_v))
+            expected_structure[key] = (int(source_vert), int(source_edge))
+    return expected_uv, expected_structure
+
+
+def _pro_exact_v2_validate_event(job, bm, uv_layer, event):
+    status, _staged = _pro_exact_v2_stage_event(job, bm, uv_layer, event)
+    return status == "ok"
+
+
+def _pro_exact_v2_source_snapshot_matches(job, bm, uv_layer):
+    """Validate the complete source state before a progressive write batch."""
+
+    snapshot_faces = job.get("snapshot", {}).get("faces", ())
+    expected_uv = job.get("expected_uv", {})
+    expected_structure = job.get("expected_structure", {})
+    if len(bm.faces) != len(snapshot_faces):
+        return False
+    if len(bm.edges) != int(job.get("edge_count", len(bm.edges))):
+        return False
+    if len(bm.verts) != int(job.get("vert_count", len(bm.verts))):
+        return False
+    try:
+        bm.faces.ensure_lookup_table()
+        for face_index, _selected, _hidden, source_loops in snapshot_faces:
+            face_index = int(face_index)
+            if face_index < 0 or face_index >= len(bm.faces):
+                return False
+            loops = tuple(bm.faces[face_index].loops)
+            if len(loops) != len(source_loops):
+                return False
+            for local_index, loop in enumerate(loops):
+                key = (face_index, local_index)
+                structure = expected_structure.get(key)
+                uv_expected = expected_uv.get(key)
+                if structure is None or uv_expected is None:
+                    return False
+                if (
+                    int(loop.vert.index) != int(structure[0])
+                    or int(loop.edge.index) != int(structure[1])
+                ):
+                    return False
+                uv = loop[uv_layer].uv
+                if (
+                    abs(float(uv.x) - float(uv_expected[0])) > 1.0e-8
+                    or abs(float(uv.y) - float(uv_expected[1])) > 1.0e-8
+                ):
+                    return False
+    except (AttributeError, IndexError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError, OverflowError):
+        return False
+    return True
+
+
+def _pro_exact_v2_stage_event(job, bm, uv_layer, event):
+    """Validate one complete exact event before touching the edit BMesh."""
+
+    if not isinstance(event, dict):
+        return "invalid", None
+    try:
+        target_values = event.get("target_face_key")
+        master_values = event.get("master_face_key")
+        if not isinstance(target_values, (tuple, list)) or not target_values:
+            return "invalid", None
+        if not isinstance(master_values, (tuple, list)) or not master_values:
+            return "invalid", None
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in tuple(target_values) + tuple(master_values)
+        ):
+            return "invalid", None
+        target_faces = tuple(target_values)
+        master_faces = tuple(master_values)
+    except (TypeError, ValueError, OverflowError):
+        return "invalid", None
+    if any(value < 0 for value in target_faces + master_faces):
+        return "invalid", None
+    if len(set(target_faces)) != len(target_faces) or len(set(master_faces)) != len(master_faces):
+        return "invalid", None
+    if len(bm.faces) != len(job["snapshot"].get("faces", ())):
+        return "changed", None
+    if len(bm.edges) != int(job.get("edge_count", len(bm.edges))):
+        return "changed", None
+    if len(bm.verts) != int(job.get("vert_count", len(bm.verts))):
+        return "changed", None
+    expected_uv = job.get("expected_uv", {})
+    expected_structure = job.get("expected_structure", {})
+    try:
+        bm.faces.ensure_lookup_table()
+        for face_index in set(target_faces + master_faces):
+            if face_index < 0 or face_index >= len(bm.faces):
+                return "invalid", None
+            face = bm.faces[face_index]
+            for local_index, loop in enumerate(face.loops):
+                key = (face_index, local_index)
+                structure = expected_structure.get(key)
+                uv_expected = expected_uv.get(key)
+                if structure is None or uv_expected is None:
+                    return "invalid", None
+                if int(loop.vert.index) != structure[0] or int(loop.edge.index) != structure[1]:
+                    return "changed", None
+                uv = loop[uv_layer].uv
+                if (
+                    abs(float(uv.x) - uv_expected[0]) > 1.0e-8
+                    or abs(float(uv.y) - uv_expected[1]) > 1.0e-8
+                ):
+                    return "changed", None
+        allowed_keys = _v2_allowed_write_keys(job)
+        target_loop_keys = {
+            (face_index, local_index)
+            for face_index in target_faces
+            for local_index in range(len(tuple(bm.faces[face_index].loops)))
+        }
+        writes = event.get("writes")
+        staged = _v2_stage_writes(
+            job,
+            bm,
+            uv_layer,
+            writes,
+            allowed_keys=allowed_keys,
+            face_keys=set(target_faces),
+        )
+        if staged is None or {item[0] for item in staged} != target_loop_keys:
+            return "invalid", None
+    except (AttributeError, IndexError, KeyError, ReferenceError, RuntimeError, TypeError, ValueError, OverflowError):
+        return "invalid", None
+    return "ok", staged
+
+
+def _pro_exact_v2_apply_pending_updates(job):
+    source_state = globals().get("_fast_v2_source_context_state")
+    if callable(source_state):
+        source_state = source_state(job, bpy.context)
+    else:
+        source_state = "ready" if _fast_v2_source_context_matches(job, bpy.context) else "wait"
+    if source_state != "ready":
+        return source_state
+    obj = bpy.data.objects.get(job.get("object_name", ""))
+    if obj is None:
+        return "invalid"
+    updates_dir = Path(job.get("updates_dir", ""))
+    if not updates_dir.is_dir():
+        return "none"
+    try:
+        if not job.get("undo_pushed"):
+            first_update = updates_dir / ("%08d.pkl" % int(job.get("next_update_sequence", 1)))
+            if not first_update.is_file():
+                return "none"
+            try:
+                bpy.ops.ed.undo_push(message="uv GPT Pro Exact V2")
+            except Exception:
+                pass
+            job["undo_pushed"] = True
+            # Acquire fresh edit-mesh/layer handles on the next timer tick.
+            # Do not retain BMesh references across an undo-system operation.
+            return "wait"
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        bm.faces.index_update()
+        bm.edges.ensure_lookup_table()
+        bm.edges.index_update()
+        bm.verts.ensure_lookup_table()
+        bm.verts.index_update()
+        uv_layer = bm.loops.layers.uv.get(job["uv_map_name"])
+        if uv_layer is None:
+            return "invalid"
+        if not _pro_exact_v2_source_snapshot_matches(job, bm, uv_layer):
+            return "changed"
+        deadline = time.perf_counter() + _PRO_EXACT_V2_APPLY_BUDGET_MS / 1000.0
+        applied = 0
+        while applied < _PRO_EXACT_V2_APPLY_MAX_PER_TICK:
+            sequence = int(job.get("next_update_sequence", 1))
+            update_path = updates_dir / ("%08d.pkl" % sequence)
+            if not update_path.is_file():
+                break
+            with update_path.open("rb") as handle:
+                event = pickle.load(handle)
+            event_sequence = event.get("sequence") if isinstance(event, dict) else None
+            if (
+                not isinstance(event_sequence, int)
+                or isinstance(event_sequence, bool)
+                or event_sequence != sequence
+            ):
+                return "invalid"
+            event_state, staged = _pro_exact_v2_stage_event(job, bm, uv_layer, event)
+            if event_state != "ok":
+                return event_state
+            for (face_index, local_index), loop, u, v in staged:
+                loop[uv_layer].uv = (u, v)
+                job["expected_uv"][(int(face_index), int(local_index))] = (u, v)
+            job["next_update_sequence"] = sequence + 1
+            job["applied_count"] = int(job.get("applied_count", 0)) + 1
+            applied += 1
+            if applied > 0 and time.perf_counter() >= deadline:
+                break
+        if applied:
+            bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+            return "applied"
+        return "none"
+    except (EOFError, OSError, pickle.PickleError, ReferenceError, RuntimeError, TypeError, ValueError, IndexError, OverflowError):
+        return "invalid"
+
+
+def _pro_exact_v2_finish_job(job, terminal_state=None, terminal_error=None):
+    global _ACTIVE_PRO_EXACT_V2_JOB
+    if terminal_state is not None:
+        job["terminal_state"] = str(terminal_state)
+    elif "terminal_state" not in job:
+        # Direct unregister cleanup also comes through this helper.  Mark it as
+        # cancelled before the cleanup below closes the launcher.
+        job["terminal_state"] = "cancelled"
+    if terminal_error is not None:
+        job["terminal_error"] = str(terminal_error)
+    elif "terminal_error" not in job and job.get("error"):
+        job["terminal_error"] = str(job.get("error"))
+    _v2_reap_process(_v2_mark_job_cancelled(job))
+    overlay.clear_fast_progress()
+    try:
+        workspace = getattr(bpy.context, "workspace", None)
+        if workspace is not None:
+            workspace.status_text_set(None)
+    except Exception:
+        pass
+    work_dir = job.get("work_dir")
+    if work_dir:
+        shutil.rmtree(work_dir, ignore_errors=True)
+    if _ACTIVE_PRO_EXACT_V2_JOB is job:
+        _ACTIVE_PRO_EXACT_V2_JOB = None
+
+
+def _pro_exact_v2_background_timer():
+    global _PRO_EXACT_V2_TIMER_RUNNING
+    job = _ACTIVE_PRO_EXACT_V2_JOB
+    if job is None:
+        _PRO_EXACT_V2_TIMER_RUNNING = False
+        return None
+
+    # Stream proven exact targets back immediately while the user remains on
+    # the source object/UV map.  This happens even while the worker is still
+    # solving later targets, so islands visibly snap into the master stack.
+    partial_state = _pro_exact_v2_apply_pending_updates(job)
+    if partial_state == "changed":
+        print("UV GPT Pro Exact V2 discarded: source UV/topology changed during background work.")
+        _pro_exact_v2_finish_job(job, terminal_state="changed", terminal_error="source_changed")
+        _PRO_EXACT_V2_TIMER_RUNNING = False
+        return None
+    if partial_state == "invalid":
+        print("UV GPT Pro Exact V2 stopped: source object/UV map became invalid.")
+        _pro_exact_v2_finish_job(job, terminal_state="invalid", terminal_error="invalid_result_or_source")
+        _PRO_EXACT_V2_TIMER_RUNNING = False
+        return None
+
+    _pro_exact_v2_update_progress(job)
+    if job.get("state") == "failed":
+        print("UV GPT Pro Exact V2 failed:", job.get("error"))
+        _pro_exact_v2_finish_job(
+            job,
+            terminal_state="failed",
+            terminal_error=job.get("error", "unknown worker failure"),
+        )
+        _PRO_EXACT_V2_TIMER_RUNNING = False
+        return None
+
+    if job.get("state") != "ready_apply":
+        return _PRO_EXACT_V2_TIMER_INTERVAL
+
+    result = job.get("result") or {}
+    aligned = int(result.get("aligned_count", 0) or 0)
+    skipped = int(result.get("skipped_count", 0) or 0)
+    applied = int(job.get("applied_count", 0) or 0)
+    if applied < aligned:
+        # Worker is done, but exact target events are intentionally queued
+        # until the source context is active again (choice A).
+        source_state = _fast_v2_source_context_state(job, bpy.context)
+        if source_state == "invalid":
+            _pro_exact_v2_finish_job(
+                job,
+                terminal_state="source_invalid",
+                terminal_error="source_invalid",
+            )
+            _PRO_EXACT_V2_TIMER_RUNNING = False
+            return None
+        return _PRO_EXACT_V2_WAIT_INTERVAL if source_state != "ready" else _PRO_EXACT_V2_TIMER_INTERVAL
+
+    if not job.get("completion_text"):
+        elapsed = max(0.0, time.perf_counter() - float(job.get("started", time.perf_counter())))
+        if aligned == 0:
+            job["completion_text"] = f"100%  •  {elapsed:.1f}s  •  0 exact target(s)  •  {skipped} skipped"
+        else:
+            job["completion_text"] = f"100%  •  {elapsed:.1f}s  •  {aligned} exact  •  {skipped} skipped"
+        job["done_hold_until"] = time.perf_counter() + _PRO_EXACT_V2_DONE_HOLD_SECONDS
+        _pro_exact_v2_update_progress(job)
+        return _PRO_EXACT_V2_TIMER_INTERVAL
+
+    if time.perf_counter() < float(job.get("done_hold_until", 0.0) or 0.0):
+        return _PRO_EXACT_V2_TIMER_INTERVAL
+
+    print(
+        "UV GPT Pro Exact V2 applied: %s exact target(s), %s group(s), %s skipped."
+        % (aligned, result.get("group_count", 0), skipped)
+    )
+    _pro_exact_v2_finish_job(job, terminal_state="applied")
+    _PRO_EXACT_V2_TIMER_RUNNING = False
+    return None
+
+
+def _ensure_pro_exact_v2_timer():
+    global _PRO_EXACT_V2_TIMER_RUNNING
+    if _PRO_EXACT_V2_TIMER_RUNNING:
+        return
+    _PRO_EXACT_V2_TIMER_RUNNING = True
+    try:
+        bpy.app.timers.register(
+            _pro_exact_v2_background_timer,
+            first_interval=_PRO_EXACT_V2_TIMER_INTERVAL,
+        )
+    except ValueError:
+        pass
+
+
+def _pro_exact_v2_start_job(context):
+    global _ACTIVE_PRO_EXACT_V2_JOB
+    if _ACTIVE_PRO_EXACT_V2_JOB is not None:
+        raise RuntimeError("Pro is already running in the background.")
+    if _ACTIVE_FAST_BACKGROUND_JOB is not None:
+        raise RuntimeError("Fast is already running in the background.")
+    if _ACTIVE_PRO_SESSION is not None and not _ACTIVE_PRO_SESSION.done:
+        raise RuntimeError("A Pro stack operation is already active.")
+    if _v2_pack_background_job() is not None:
+        raise RuntimeError("Pack is already running in the background.")
+    obj, bm, uv_layer, snapshot, center = _pro_exact_v2_capture_snapshot(context)
+    work_dir = tempfile.mkdtemp(prefix="uv_gpt_pro_exact_v2_")
+    expected_uv, expected_structure = _pro_exact_v2_expected_maps(snapshot)
+    job = {
+        "kind": "pro_exact_v2",
+        "object_name": str(obj.name),
+        "data_name": str(getattr(obj.data, "name", "")),
+        "uv_map_name": str(getattr(uv_layer, "name", "")),
+        "_object_ref": obj,
+        "_data_ref": getattr(obj, "data", None),
+        "object_pointer": _v2_rna_pointer(obj),
+        "data_pointer": _v2_rna_pointer(getattr(obj, "data", None)),
+        "center": center,
+        "snapshot": snapshot,
+        "edge_count": len(bm.edges),
+        "vert_count": len(bm.verts),
+        "started": time.perf_counter(),
+        "state": "launching",
+        "progress": {"stage": "snapshot", "percent": 1.0, "done": 0, "total": 1},
+        "work_dir": work_dir,
+        "input_path": str(Path(work_dir) / "input.pkl"),
+        "output_path": str(Path(work_dir) / "output.pkl"),
+        "progress_path": str(Path(work_dir) / "progress.json"),
+        "updates_dir": str(Path(work_dir) / "updates"),
+        "blender_binary": getattr(getattr(bpy, "app", None), "binary_path", None),
+        "blender_version": getattr(getattr(bpy, "app", None), "version", None),
+        "process": None,
+        "pid": None,
+        "_launch_lock": threading.Lock(),
+        "result": None,
+        "error": None,
+        "cancelled": False,
+        "expected_uv": expected_uv,
+        "expected_structure": expected_structure,
+        "next_update_sequence": 1,
+        "applied_count": 0,
+        "undo_pushed": False,
+        "completion_text": "",
+        "done_hold_until": 0.0,
+    }
+    thread = threading.Thread(
+        target=_pro_exact_v2_launch_thread,
+        args=(job,),
+        name="uv-gpt-pro-exact-v2-launcher",
+        daemon=True,
+    )
+    job["thread"] = thread
+    _ACTIVE_PRO_EXACT_V2_JOB = job
+    thread.start()
+    _pro_exact_v2_update_progress(job)
+    _ensure_pro_exact_v2_timer()
+    return job
+
+
+class UVGPT_OT_align_similar_pro_snap(bpy.types.Operator):
+    bl_idname = "uv_gpt.align_similar_pro_snap"
+    bl_label = "Pro"
+    bl_description = (
+        "Pro Exact V2: prove complete topology correspondence in an external "
+        "process and stream each proven target onto the master exactly while the source UV map is active"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _start_detached(self, context):
+        try:
+            _pro_exact_v2_start_job(context)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            self.report({"ERROR"}, "Pro stack failed: %s" % exc)
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            "Pro Exact V2 is running in an external process; Blender is free for other work. "
+            "Each proven exact target snaps into the master immediately on the source UV map; results queue safely while you work elsewhere.",
+        )
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        del event
+        return self._start_detached(context)
+
+    def execute(self, context):
+        return self._start_detached(context)
+
+
 class _UVGPT_OT_align_similar_pro_mode:
     """Shared atomic/modal lifecycle for the two explicit Pro algorithms."""
 
     bl_options = {"REGISTER", "UNDO"}
     correspondence_mode = pro_process_payload.CORRESPONDENCE_MODE_HYBRID
+    modal_active_budget_ms = _PRO_MODAL_TICK_ACTIVE_BUDGET_MS
+    modal_max_correspondence_per_tick = _PRO_MODAL_MAX_CORRESPONDENCE_PER_TICK
 
     _timer = None
     _session = None
@@ -9852,8 +11630,8 @@ class _UVGPT_OT_align_similar_pro_mode:
         if event.type != "TIMER":
             return {"RUNNING_MODAL"}
         session.step(
-            active_budget_ms=_PRO_MODAL_TICK_ACTIVE_BUDGET_MS,
-            max_correspondence=_PRO_MODAL_MAX_CORRESPONDENCE_PER_TICK,
+            active_budget_ms=self.modal_active_budget_ms,
+            max_correspondence=self.modal_max_correspondence_per_tick,
         )
         _pro_modal_progress_update(context, session)
         if not session.done:
@@ -9867,14 +11645,35 @@ class UVGPT_OT_align_similar_pro_fast(
     bpy.types.Operator,
 ):
     bl_idname = "uv_gpt.align_similar_pro_fast"
-    bl_label = "Pro Fast"
+    bl_label = "Fast"
     bl_description = (
-        "Stack only UV islands proven by the verified-nearest mapping; "
-        "unverified pairs are skipped without exact fallback"
+        "Fast V2: copy a compact UV snapshot, run matching in an external "
+        "process, then apply atomically when the source UV map is available"
     )
     correspondence_mode = (
         pro_process_payload.CORRESPONDENCE_MODE_VERIFIED_NEAREST_ONLY
     )
+    modal_active_budget_ms = _PRO_FAST_MODAL_TICK_ACTIVE_BUDGET_MS
+
+    def _start_detached(self, context):
+        try:
+            _fast_v2_start_job(context)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            "Fast V2 is running in an external process; Blender is free for other work. "
+            "The result applies atomically when you return to the source UV map.",
+        )
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        del event
+        return self._start_detached(context)
+
+    def execute(self, context):
+        return self._start_detached(context)
 
 
 class UVGPT_OT_align_similar_pro_exact(
@@ -10617,6 +12416,7 @@ def run_match_03(request):
 classes = (
     UVGPT_OT_paste_keep_position,
     UVGPT_OT_align_to_selected,
+    UVGPT_OT_align_similar_pro_snap,
     UVGPT_OT_align_similar_pro_fast,
     UVGPT_OT_align_similar_pro_exact,
 )
@@ -10629,6 +12429,10 @@ def register():
 
 def unregister():
     global _ACTIVE_PRO_SESSION, _ACTIVE_PRO_OPERATOR
+    global _ACTIVE_FAST_BACKGROUND_JOB, _FAST_BACKGROUND_TIMER_RUNNING
+    global _ACTIVE_PRO_EXACT_V2_JOB, _PRO_EXACT_V2_TIMER_RUNNING
+    background_job = _ACTIVE_FAST_BACKGROUND_JOB
+    exact_job = _ACTIVE_PRO_EXACT_V2_JOB
     if _ACTIVE_PRO_OPERATOR is not None:
         _ACTIVE_PRO_OPERATOR._cleanup_modal(
             bpy.context,
@@ -10637,6 +12441,18 @@ def unregister():
         )
     elif _ACTIVE_PRO_SESSION is not None and not _ACTIVE_PRO_SESSION.done:
         _ACTIVE_PRO_SESSION.cancel("unregister")
+    if background_job is not None:
+        if background_job.get("kind") == "fast_v2":
+            _fast_v2_cancel_job(background_job)
+        else:
+            _fast_clear_status(background_job)
+    if exact_job is not None:
+        _pro_exact_v2_finish_job(exact_job)
+    overlay.clear_fast_progress()
+    _ACTIVE_FAST_BACKGROUND_JOB = None
+    _FAST_BACKGROUND_TIMER_RUNNING = False
+    _ACTIVE_PRO_EXACT_V2_JOB = None
+    _PRO_EXACT_V2_TIMER_RUNNING = False
     _ACTIVE_PRO_SESSION = None
     _ACTIVE_PRO_OPERATOR = None
     for cls in reversed(classes):

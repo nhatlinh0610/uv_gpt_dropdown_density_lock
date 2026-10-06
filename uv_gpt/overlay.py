@@ -6,6 +6,7 @@ import time
 
 TD_OVERLAY_LABELS = []
 ISLAND_OVERLAY_LABELS = []
+FAST_PROGRESS_LABELS = []
 _DRAW_HANDLERS = []
 _TIMER_RUNNING = False
 _EVENT_WATCHER_RUNNING = False
@@ -36,7 +37,7 @@ def tag_redraw_image_editors():
 
 
 def _overlay_active():
-    return bool(TD_OVERLAY_LABELS or ISLAND_OVERLAY_LABELS)
+    return bool(TD_OVERLAY_LABELS or ISLAND_OVERLAY_LABELS or FAST_PROGRESS_LABELS)
 
 
 def _context_object(context):
@@ -170,7 +171,8 @@ def stop_navigation_watcher():
 def clear_labels_for_navigation():
     TD_OVERLAY_LABELS.clear()
     ISLAND_OVERLAY_LABELS.clear()
-    remove_draw_handler()
+    if not FAST_PROGRESS_LABELS:
+        remove_draw_handler()
     stop_overlay_timer()
     stop_event_watcher()
     stop_navigation_watcher()
@@ -382,7 +384,7 @@ def _draw_callback(region=None):
         view2d = getattr(region, "view2d", None)
         if not view2d:
             return
-        labels = TD_OVERLAY_LABELS + ISLAND_OVERLAY_LABELS
+        labels = TD_OVERLAY_LABELS + ISLAND_OVERLAY_LABELS + FAST_PROGRESS_LABELS
         dense = len(labels) > MAX_OUTLINED_LABELS
         text_size = 11 if dense else 13
         for label in labels:
@@ -457,7 +459,7 @@ def set_td_labels(labels):
 
 def clear_td_labels():
     TD_OVERLAY_LABELS.clear()
-    if not ISLAND_OVERLAY_LABELS:
+    if not ISLAND_OVERLAY_LABELS and not FAST_PROGRESS_LABELS:
         remove_draw_handler()
         stop_navigation_watcher()
         stop_event_watcher()
@@ -481,13 +483,32 @@ def set_island_labels(labels):
 
 def clear_island_labels():
     ISLAND_OVERLAY_LABELS.clear()
-    if not TD_OVERLAY_LABELS:
+    if not TD_OVERLAY_LABELS and not FAST_PROGRESS_LABELS:
         remove_draw_handler()
         stop_navigation_watcher()
         stop_event_watcher()
     sync_overlay_timer()
     tag_redraw_image_editors()
 
+
+
+
+def set_fast_progress(label):
+    """Show one static Fast-job progress label without starting a modal watcher."""
+
+    FAST_PROGRESS_LABELS[:] = [label] if label else []
+    if FAST_PROGRESS_LABELS:
+        ensure_draw_handler()
+    elif not TD_OVERLAY_LABELS and not ISLAND_OVERLAY_LABELS:
+        remove_draw_handler()
+    tag_redraw_image_editors()
+
+
+def clear_fast_progress():
+    FAST_PROGRESS_LABELS.clear()
+    if not TD_OVERLAY_LABELS and not ISLAND_OVERLAY_LABELS:
+        remove_draw_handler()
+    tag_redraw_image_editors()
 
 def refresh_island_labels(context):
     labels = _build_island_labels(context)
@@ -549,7 +570,7 @@ class UVGPT_OT_overlay_event_watcher(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def modal(self, _context, event):
-        if not _EVENT_WATCHER_RUNNING or not _overlay_active():
+        if not _EVENT_WATCHER_RUNNING or not (TD_OVERLAY_LABELS or ISLAND_OVERLAY_LABELS):
             stop_event_watcher()
             return {"CANCELLED"}
 
@@ -596,6 +617,7 @@ def register():
 def unregister():
     clear_td_labels()
     clear_island_labels()
+    clear_fast_progress()
     stop_navigation_watcher()
     stop_event_watcher()
     stop_overlay_timer()

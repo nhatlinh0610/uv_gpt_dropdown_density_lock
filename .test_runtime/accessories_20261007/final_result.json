@@ -1,0 +1,21 @@
+{
+  "source": "GEO_Accessories_Combined",
+  "uv_maps_unchanged": [
+    "UVMap",
+    "UVMap.001"
+  ],
+  "coordinates_topology_unchanged": true,
+  "pins_unchanged": true,
+  "selection_restored": true,
+  "settings_restored": true,
+  "mode": "EDIT",
+  "active_uv": "UVMap",
+  "temporary_object_removed": true,
+  "blend_saved": false,
+  "python_files": 38,
+  "source_zip_installed_parity": 38,
+  "zip_crc_pass": true,
+  "zip_size": 367342,
+  "zip_sha256": "4006c09f75cb3653b58a26f3903fc05bb20135376b80767e4a287158b08222e3",
+  "addon_enabled": true
+}

@@ -1,4 +1,8 @@
-"""Static contracts for the S2 UV selection-scope hotfix."""
+"""Static contracts for ZIP-authoritative selection and Pack V2 routes.
+
+These checks deliberately inspect source and AST only. Blender integration,
+external worker execution, and exact numeric stack verification belong to Z3.
+"""
 
 from __future__ import annotations
 
@@ -28,35 +32,64 @@ def _function(tree, name):
     )
 
 
+def _class(tree, name):
+    return next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == name
+    )
+
+
+def _node_source(name, node):
+    source = _source(name)
+    return ast.get_source_segment(source, node)
+
+
 class PackSelectedCenterHotfixStaticTests(unittest.TestCase):
     def test_changed_modules_compile_as_ast(self):
-        for name in ("island_tools.py", "uv_utils.py", "pack_tools.py", "transform_tools.py"):
+        for name in (
+            "island_tools.py",
+            "uv_utils.py",
+            "pack_tools.py",
+            "pack_v2_core.py",
+            "transform_tools.py",
+        ):
             compile(_source(name), name, "exec")
 
-    def test_uv_only_scope_is_explicit_and_fail_closed(self):
+    def test_uv_sync_on_uses_mesh_selection_without_stale_validity_gate(self):
         source = _source("island_tools.py")
         tree = _tree("island_tools.py")
         for name in (
             "_context_uv_select_sync",
+            "_mesh_select_mode",
+            "_face_mesh_selected_for_uv_sync",
             "_face_uv_selected_for_context",
             "validate_uv_selection_scope",
             "get_selected_uv_islands_for_context",
         ):
             _function(tree, name)
-        self.assertIn("uv_select_sync_valid", source)
-        self.assertIn("uv_select_edge", source)
-        self.assertIn("uv_select_vert", source)
-        self.assertIn("disable UV Sync", source)
-        predicate = ast.get_source_segment(source, _function(tree, "_face_uv_selected_for_context"))
-        self.assertNotIn("loop.edge.select", predicate)
-        self.assertNotIn("loop.vert.select", predicate)
 
-    def test_invalid_sync_refresh_is_nondestructive_and_prewrite(self):
+        predicate = _node_source(
+            "island_tools.py",
+            _function(tree, "_face_mesh_selected_for_uv_sync"),
+        )
+        validation = _node_source(
+            "island_tools.py",
+            _function(tree, "validate_uv_selection_scope"),
+        )
+        self.assertIn("_mesh_select_mode(context)", predicate)
+        self.assertIn('getattr(edge, "select", False)', predicate)
+        self.assertIn('getattr(vert, "select", False)', predicate)
+        self.assertIn("if _context_uv_select_sync(context):", validation)
+        self.assertIn("return", validation)
+        self.assertIn("def refresh_uv_selection_scope", source)
+        self.assertIn("uv_select_sync_from_mesh", source)
+        self.assertNotIn("uv_select_sync_valid", validation)
+
+    def test_legacy_refresh_helper_remains_nondestructive_compatibility(self):
         source = _source("island_tools.py")
-        tree = _tree("island_tools.py")
-        refresh = ast.get_source_segment(
-            source,
-            _function(tree, "refresh_uv_selection_scope"),
+        refresh = _node_source(
+            "island_tools.py",
+            _function(_tree("island_tools.py"), "refresh_uv_selection_scope"),
         )
         for marker in (
             "uv_select_sync_from_mesh",
@@ -75,81 +108,78 @@ class PackSelectedCenterHotfixStaticTests(unittest.TestCase):
             "set_all_uv_selection",
         ):
             self.assertNotIn(forbidden, refresh)
+        self.assertIn("without changing UVs", refresh)
+        self.assertIn("refresh_uv_selection_scope", source)
 
-        validation = ast.get_source_segment(
-            source,
-            _function(tree, "validate_uv_selection_scope"),
+    def test_selected_pack_capture_preserves_context_and_active_uv_identity(self):
+        source = _source("pack_tools.py")
+        capture = _node_source(
+            "pack_tools.py",
+            _function(_tree("pack_tools.py"), "_pack_v2_capture_snapshot"),
         )
-        self.assertIn("refresh_invalid_sync=False", validation)
-        self.assertIn("refresh_uv_selection_scope", validation)
+        self.assertIn("validate_uv_selection_scope", capture)
+        self.assertIn("world_area_by_face", capture)
+        self.assertIn("selected", capture)
+        self.assertIn("scale_to_fit", capture)
+        self.assertIn("_pack_v2_snapshot_unchanged", source)
+        self.assertIn("uv_map_name", source)
+        self.assertIn("_pack_v2_source_context_matches", source)
 
-    def test_pack_uses_scope_snapshot_native_guard_and_finally_restore(self):
+    def test_pack_v2_operators_route_to_external_worker(self):
         source = _source("pack_tools.py")
         tree = _tree("pack_tools.py")
-        pack = _function(tree, "_pack")
-        pack_source = ast.get_source_segment(source, pack)
-        for marker in (
-            "validate_uv_selection_scope",
-            "get_selected_uv_islands_for_context",
-            "store_uv_selection_state",
-            "select_uv_islands",
-            "_uv_snapshot(all_islands",
-            "_uv_snapshot_matches",
-            "restore_uv_selection_state",
-            "finally:",
-        ):
-            self.assertIn(marker, pack_source)
-        self.assertLess(
-            pack_source.index("validate_uv_selection_scope"),
-            pack_source.index("ensure_destructive_ready"),
-        )
-        self.assertIn("refresh_invalid_sync=True", pack_source)
-        self.assertEqual(pack_source.count("refresh_invalid_sync=True"), 1)
-        self.assertIn("Pack Selected changed unselected UVs", pack_source)
+        expected = {
+            "UVGPT_OT_pack_selected": '"selected"',
+            "UVGPT_OT_pack_symmetry": '"symmetry"',
+            "UVGPT_OT_pack_whole_mesh": '"whole"',
+        }
+        for class_name, mode in expected.items():
+            operator = _node_source("pack_tools.py", _class(tree, class_name))
+            self.assertIn("_pack_v2_start_job(context, ", operator)
+            self.assertIn(mode, operator)
+            self.assertNotIn("_pack(context", operator)
+        self.assertIn("pack_v2_worker.py", source)
+        self.assertIn("subprocess.Popen", source)
+        self.assertIn("threading.Thread", source)
+        self.assertIn("_pack_v2_background_timer", source)
 
-    def test_selected_pack_uses_explicit_internal_backend_not_native(self):
-        source = _source("pack_tools.py")
-        tree = _tree("pack_tools.py")
-        pack_source = ast.get_source_segment(source, _function(tree, "_pack"))
-        selected_route = pack_source.index("if selected_only:")
-        native_route = pack_source.index("uv_utils.run_uv_pack(")
-        whole_mesh_route = pack_source.index("Pack Whole Mesh retains")
-        self.assertLess(selected_route, native_route)
-        self.assertLess(whole_mesh_route, native_route)
-        self.assertIn("uv_utils.basic_pack_islands(", pack_source)
-        self.assertIn("cannot mutate an unselected loop", pack_source)
+    def test_pack_v2_uses_actual_geometry_and_static_blockers(self):
+        pack = _source("pack_tools.py")
+        core = _source("pack_v2_core.py")
+        geometry = _source("pack_geometry.py")
+        self.assertIn("_scope_static_islands", pack)
+        self.assertIn("static_islands", pack)
+        self.assertIn("world_area_by_face", pack)
+        self.assertIn("boundary_loops_from_segments", core)
+        self.assertIn("shape_sets_conflict", core)
+        self.assertIn("static_shapes", core)
+        self.assertIn("pair_similar_records", core)
+        self.assertIn("concave", core.lower())
+        self.assertIn("polygons_conflict", geometry)
 
-    def test_center_validates_uv_scope_before_destructive_boundary(self):
+    def test_center_selected_uses_zip_selection_helper_before_destructive_boundary(self):
         source = _source("transform_tools.py")
         tree = _tree("transform_tools.py")
-        selected_source = ast.get_source_segment(
-            source,
+        selected_source = _node_source(
+            "transform_tools.py",
             _function(tree, "_selected_islands"),
         )
+        self.assertIn("get_selected_uv_islands_for_context", selected_source)
         self.assertLess(
             selected_source.index("get_selected_uv_islands_for_context"),
             selected_source.index("ensure_destructive_ready"),
         )
-        self.assertIn("refresh_invalid_sync=True", selected_source)
-        self.assertEqual(selected_source.count("refresh_invalid_sync=True"), 1)
+        self.assertNotIn("refresh_uv_selection_scope", selected_source)
+        self.assertNotIn("get_selected_uv_islands(bm, uv_layer)", selected_source)
 
-    def test_center_selected_uses_uv_only_scope_without_changing_other_transforms(self):
-        source = _source("transform_tools.py")
-        tree = _tree("transform_tools.py")
-        selected_islands = _function(tree, "_selected_islands")
-        selected_source = ast.get_source_segment(source, selected_islands)
-        self.assertIn("uv_only", selected_source)
-        center = _function(tree, "execute")
-        center_source = ast.get_source_segment(source, center)
-        self.assertIn("_selected_islands(context, uv_only=True)", center_source)
-        self.assertIn("get_selected_uv_islands(bm, uv_layer)", selected_source)
-
-    def test_legacy_generic_helpers_remain_for_unrelated_callers(self):
+    def test_active_uv_helpers_and_generic_legacy_helpers_remain_available(self):
         island_source = _source("island_tools.py")
         uv_source = _source("uv_utils.py")
         self.assertIn("def get_selected_uv_islands(bm, uv_layer):", island_source)
         self.assertIn("def select_islands(bm, uv_layer, islands):", uv_source)
         self.assertIn("def select_uv_islands(context, bm, uv_layer, islands):", uv_source)
+        self.assertIn("def set_active_uv_map(context, name):", uv_source)
+        self.assertIn("obj.data.uv_layers.active", uv_source)
 
 
 if __name__ == "__main__":

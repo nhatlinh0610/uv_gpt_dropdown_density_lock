@@ -1,83 +1,173 @@
 # Trạng thái hiện tại — uv GPT
 
-- Last reviewed: `2026-08-21`
-- Project type: Blender add-on Python package.
-- Add-on name: `uv GPT`.
-- Version: `1.2.6` (từ `uv_gpt/__init__.py::bl_info`).
-- Blender target: `>= 3.6.0` (metadata `bl_info["blender"] == (3, 6, 0)`).
-- UI location: UV Editor → Sidebar → `uv GPT`.
-- Repository: không phải Git repository.
+## Accessories MCP1234 release — 2026-10-07
 
-## Artifact và source
+- Exact fixture: GEO_Accessories_Combined, Blender5.2.2 LTS/d13f752e3b9c,
+  MCP port1234,149 visible islands/8378 faces.
+- Single U/V symmetry now reflects coordinates; Pack Symmetry reflects full
+  corresponding UV geometry. Keep Stack Exact preserves all88 Pro followers.
+- Fixed Square/Paste Sync OFF scope, full Pack margin, scale1 valid-layout reuse,
+  full UV boundary/corner bounds, mutual job admission, full-source progressive
+  guard and terminal source cleanup.
+- All tested selected-only writes preserve inactive maps, hidden faces and static UV.
+- 80 extracted-ZIP regressions pass with zero skips; strict feature context pass.
+- Canonical ZIP 367342 bytes, SHA256 `4006c09f75cb3653b58a26f3903fc05bb20135376b80767e4a287158b08222e3`.
+- Quick Reinstall completed;38/38 source/ZIP/installed Python files match.
+- Original source UVs/pins/coordinates/topology and selection/settings restored;
+  temporary object removed; production blend not saved.
+- Report: `tests/blender/accessories_mcp_report.md`; raw/retry/native recovery
+  evidence: `.test_runtime/accessories_20261007/`.
+- Limits: pair Center/Symmetry is a similarity transform, unmatched Pack singles
+  are rigid, exact mirror with unequal world areas does not imply equal density;
+  no general Undo/redo, globally optimal packing or multi-version certification.
+- Older snapshots below are historical and their ZIP hashes/verification limits
+  do not describe this current packaged runtime.
 
-- Source package: `uv_gpt/`.
-- Distribution artifact duy nhất: `uv_gpt_v1.2.6.zip`.
-- `uv_gpt_v1.2.6.zip`: `306,757` bytes, SHA256
-  `217B60633748883B589CCEEDAC6860CEED5B55E8775C8843A07A2DC868CA3FA7`.
-- ZIP release chứa package `uv_gpt/` với đúng 30 file Python hiện tại, byte
-  parity với source; không chứa tests, benchmarks, runtime, docs hoặc cache.
-- Root workspace có đúng một ZIP: `uv_gpt_v1.2.6.zip`.
-- Version `1.2.6` khớp `bl_info` và package smoke kiểm tra từ bản extract của ZIP.
+## Quick Reinstall delivery — 2026-09-15
 
-## Bản đồ kiến trúc hiện tại
+- User explicitly authorized ZIP packaging and Quick Reinstall, superseding the earlier ZIP freeze for this delivery.
+- Rebuilt canonical `uv_gpt_v1.2.6.zip`: 356159 bytes; SHA256 `d486d1e3accd7307332171320e7cbd10fd0992a0dda80a61140edafd9a3c2af5`.
+- 38 Python files compiled; ZIP structure/CRC/source parity passed; six focused tests passed from the extracted ZIP.
+- Quick Reinstall disabled/replaced/enabled uv_gpt and saved preferences in Blender 5.2.1. Installed 38/38 Python files match ZIP, corrected apply function loaded, Pro registered.
+- Previous ZIP backed up under `.test_runtime/zip_backups/uv_gpt_v1.2.6_before_pro_fix_20260915_035408.zip`.
+- Rapid test build; prior Bottom live evidence applies. General Undo/redo and full release gates remain unverified. Historical source-only/immutable statements below describe earlier checkpoints.
 
-| Module | Trách nhiệm được thấy trong source |
+## Pro Bottom MCP fix — 2026-09-15 (unreleased source)
+
+- User resumed work and authorized testing `Bottom` through Blender MCP, then fixing Pro.
+- `Bottom` / `UVMap`: 29,440 faces, 549 islands; Blender 5.2.1 LTS build `9e2066aef7ef`.
+- Installed baseline failed with `boundary_component_branch_or_open`, applied 0 targets.
+- Fixed UV-cut graph construction and reversed-winding edge incidence; added singleton/rejection accounting.
+- Fixed Windows progress-file sharing failures and reacquired BMesh after the undo-push tick.
+- BLENDER PASS on a disposable copy: 470/470 targets applied, 68 masters, 11 unmatched topology singletons; 79,945 written loops, maximum result-to-Blender coordinate error 0.0; completion 33.4 seconds in this run.
+- Original Bottom UVs unchanged; temporary object removed, original active object/selection/sync restored, worker exited 0 and job directory removed. No blend save or installed-addon modification.
+- STATIC PASS: six focused regressions. Undo/redo, other fixtures and a release package remain unverified.
+- Runtime source now intentionally differs from immutable `uv_gpt_v1.2.6.zip` in `pro_exact_v2_core.py`, `pro_exact_v2_worker.py`, `stack_tools.py`. Earlier ZIP parity below is historical.
+- Evidence: `tests/blender/bottom_pro_mcp_evidence.md`; local raw evidence under `.test_runtime/bottom_pro_diagnostic/`.
+
+## PO handoff — 2026-09-15
+
+- Mode: `WAIT_FOR_USER`; successor PO receives context only and must wait for the next user instruction.
+- Source chat: `01a01e22-ff1f-7ab1-97d0-f7cc41a0e585` (UV GPT Two Pro Modes Recovery PO).
+- ZIP SHA256 rechecked today: `ED2C740C47D7848D98AC2BA5FE4C626A4BFB33DDF6F815D0F8A2D867343F3658`; ZIP remains authoritative and immutable for this synchronization stream.
+- Historical Z3 evidence: 129 Python files compiled; focused suite 37 tests with 9 skips; three pure V2 worker smokes passed. Full suite was not green (336 tests, 17 failures, 33 errors); feature-context validator reported 36 errors. Do not interpret the older pending/pass summaries below as full acceptance.
+- Blender live, global exact-stack error <= 1e-7, and the reported Pro 60–100 second disappearance remain unverified. The required portable Blender path was missing at the previous audit; no new runtime discovery or live test was performed for this handoff.
+- No active implementation node, writer, child or ownership lock is transferred. Preserve the dirty worktree and intentional benchmark deletions. Do not rerun completed synchronization or start remediation until the user resumes work.
+
+- Last reviewed: `2026-08-22`
+- Add-on: `uv GPT`
+- Version: `1.2.6`
+- Blender declared minimum: `>= 3.6.0`
+- Blender 5.2 live verification: pending Z3
+- UI: UV Editor → Sidebar → `uv GPT`
+- Source runtime: `uv_gpt/`
+- Release artifact: `uv_gpt_v1.2.6.zip`
+- Artifact size: `360305` bytes
+- Artifact SHA256: `ED2C740C47D7848D98AC2BA5FE4C626A4BFB33DDF6F815D0F8A2D867343F3658`
+- Runtime manifest: exactly 38 Python files below `uv_gpt/`
+- Z1 parity: repo runtime `38/38` exact relative-path and byte parity with ZIP
+
+## Runtime authority
+
+For runtime package contents and behavior, the ZIP above is authoritative.
+Tests, docs, dev scripts, config and benchmark harnesses remain repository
+artifacts and must describe/test this runtime after alignment. A dirty runtime
+file is evidence of drift, not protection from ZIP reconciliation.
+
+## User-facing contract
+
+### Pack V2
+
+- `Pack Selected`, `Pack Whole Mesh` and `Pack Symmetry` launch external Pack V2
+  jobs and return without blocking Blender.
+- Selected mode moves only selected movable islands, keeps unselected UVs exact,
+  and uses unselected actual geometry as static blockers.
+- Whole Mesh mode treats all islands as movable.
+- Symmetry mode pairs compatible islands, unifies density, applies U/V symmetry
+  constraints and uses exact polygon collision/layout checks.
+- Actual concave/disjoint/hole boundary geometry is part of the collision route;
+  bounding boxes are not the final geometry oracle.
+- `Keep Current Scale` controls selected scale-to-fit behavior.
+- `Keep Stack Exact` preserves topology-mapped stack followers by exact final
+  master-copy semantics.
+
+### Stack Fast / Pro
+
+- Panel exposes `uv_gpt.align_similar_pro_fast` as `Fast` and
+  `uv_gpt.align_similar_pro_snap` as `Pro`.
+- Fast uses `fast_v2_worker.py` and `fast_v2_core.py` in an external process,
+  with nonblocking Blender execution and guarded atomic apply.
+- Pro uses `pro_exact_v2_worker.py` and `pro_exact_v2_core.py`; correspondence
+  is complete exact topology/loop-to-loop mapping, heavy search is external,
+  and proven target results apply progressively.
+- Pro reports skipped/unproven targets and worker failures honestly and holds
+  terminal progress briefly before cleanup.
+- Legacy operator/backend classes remain only for compatibility and historical
+  harnesses; they are not the user-facing Fast/Pro panel route.
+
+### Active UV map and selection
+
+- Actual `obj.data.uv_layers.active` is authoritative for destructive work.
+- Jobs snapshot `uv_map_name` and wait for the correct object, Edit Mode and
+  active UV map before applying results.
+- UV Select Sync ON maps mesh face/edge/vertex selection to selected routes and
+  does not require stale `uv_select_sync_valid` or the legacy refresh helper as
+  a validity gate; that helper remains in the ZIP for compatibility.
+- Sync OFF uses independent UV selection flags.
+
+### Overlay
+
+Progress text is:
+
+```text
+{percent:.0f}%  •  {elapsed:.1f}s  •  {done}/{total}
+```
+
+Fast/Pro/Pack progress is timer-driven and uses a terminal done-hold so the
+progress label does not disappear before the user can see completion.
+
+### Keep Stack Exact numeric status
+
+The ZIP proves exact topology correspondence and final exact coordinate copy,
+but source inspection does not prove a literal numeric tolerance `<= 1e-7`.
+The current evidence shows internal values such as topology default `1e-6`,
+Pack direct gate `2e-5` and force-search tolerance. This remains an explicit Z3
+numeric acceptance-risk; it is not documented as verified.
+
+## Runtime ownership map
+
+| Module | Responsibility |
 |---|---|
-| `uv_gpt/__init__.py` | `bl_info`, version, load/reload 11 module, stale registration cleanup, `register()`/`unregister()`. |
-| `uv_gpt/properties.py` | `UVGPT_Settings`, texel-density preset properties, active UV map, pack/density/stack/symmetry/overlay/UI settings và `Scene.uv_gpt_settings`. |
-| `uv_gpt/ui.py` | Panel `uv GPT` trong Image Editor/UV context và các section Pack/Density/Stack/Symmetry/Overlay/UV Map. Panel View 3D hiện poll false. |
-| `uv_gpt/island_tools.py` | Xác định UV island, island active/selected, bounds, center, area và face metrics; refresh stale UV Sync selection state trước selected-only Pack/Center. |
-| `uv_gpt/uv_utils.py` | Lấy mesh/UV context, chọn island, transform cơ bản, copy/paste, pack helper và duplicate sang `Bake_Optimized`. |
-| `uv_gpt/pack_tools.py` | Operator pack selected/whole mesh và logic margin, rotation, density lock, unselected scope, preserve stack. |
-| `uv_gpt/texel_density.py` | Đo/format/chuyển đổi texel density, apply density, square face, grid whole mesh và các operator hiển thị/áp dụng. |
-| `uv_gpt/tdensity_presets.py` | Preset density, preset operators và khởi tạo default preset qua Blender timer. |
-| `uv_gpt/transform_tools.py` | Operator Center Selected, mirror X, rotate 90/180; Center Selected dùng selected UV scope sau pre-write refresh. |
-| `uv_gpt/symmetry_pair.py` | Auto mirror đúng hai vùng topology theo anchor/history-target, phản chiếu tâm bounding-box U/V và dịch target position-only; route executable không rotation/scale. |
-| `uv_gpt/stack_tools.py` | `Paste Keep Position`, `Align To Selected` và `Align Similar Pro`; Pro dùng immutable topology graph, density master và exact BMLoop correspondence, còn action cũ giữ ordered boundary/hole-aware matcher và AUTO scheduler. |
-| `uv_gpt/similarity_matcher.py` | Pure-Python/NumPy ordered loop descriptor, hole/topology gates, cyclic/reverse Procrustes fit và per-run diagnostics/cache. |
-| `uv_gpt/match_scheduler.py` | Deterministic single/thread numeric scheduler; ProcessPool chỉ là benchmark prototype, không ship vào operator. |
-| `uv_gpt/topology_correspondence.py` | Pure immutable face/edge/vertex/loop graph, exact deterministic correspondence, cyclic/reverse/reflection handling, hole/interior propagation và bounded search. |
-| `uv_gpt/overlay.py` | Nhãn overlay island/area/texel density và watcher/refresh cho UV Editor. |
+| `uv_gpt/__init__.py` | Registration/reload order, including `pack_geometry`; cleanup/rollback. |
+| `uv_gpt/stack_tools.py` | User-facing Fast V2/Pro Exact V2 operators, external launchers, timers, guarded apply and overlay progress. |
+| `uv_gpt/fast_v2_core.py` / `fast_v2_worker.py` | Pure Fast V2 solve and external worker entrypoint. |
+| `uv_gpt/pro_exact_v2_core.py` / `pro_exact_v2_worker.py` | Pure exact topology solve, progressive result events and worker entrypoint. |
+| `uv_gpt/pack_tools.py` | Pack V2 snapshot, external worker lifecycle, object/UV guard and user-facing Pack operators. |
+| `uv_gpt/pack_v2_core.py` / `pack_v2_worker.py` | Pure Pack V2 modes, geometry/blocker/symmetry solving and worker entrypoint. |
+| `uv_gpt/pack_geometry.py` | Pairing and polygon/segment collision helpers. |
+| `uv_gpt/topology_correspondence.py` | Exact immutable topology graph and loop correspondence. |
+| `uv_gpt/island_tools.py` | Active BMesh/UV layer, UV island discovery, Sync ON mesh selection and topology regions. |
+| `uv_gpt/uv_utils.py` | Active UV map safety, state snapshots, destructive preparation and Blender pack compatibility. |
+| `uv_gpt/overlay.py` | Fast/Pro/Pack labels, drawing, progress lifecycle, timers and cleanup. |
+| `uv_gpt/properties.py` / `uv_gpt/ui.py` | Settings, active UV map control and user-facing panel routes. |
 
-## Verification state
+## Verification status
 
-- `E:\OneDrive\AI_Rules\scripts\check-ai-project.ps1 -ProjectRoot .`:
-  **pass**, gồm `check-feature-context.ps1 -Strict` với 3 capsule.
-- Python AST/compile: **pass** cho toàn bộ 30 file `uv_gpt/*.py`.
-- Focused static suite: **17/17 pass** cho Symmetry và Pack/Center.
-- Blender 5.0 exact-fixture source smoke: **pass**.
-  - Fixture/object/map: `cc.blend`, `body pussy -4-2 base chon A big tit done`,
-    `UVMap.002`; object có 11,343 faces, 45,368 loops và 17 UV islands.
-  - Symmetry U/V: anchor trước, history-target rồi active fallback; target-only
-    one-delta transform, invalid selection/invalid UV Sync zero-write, lifecycle.
-    Maximum observed float32 readback variation/pairwise error:
-    `1.1920928955078125e-07`.
-  - Pack/Center: selected `5,544` loops, complement `39,824`; LOCK/IGNORE,
-    Center, rollback, Whole Mesh và lifecycle pass. Invalid-sync Pack/Center
-    gọi refresh đúng một lần; `136,104` UV coordinate pairs của cả 3 map exact
-    trong refresh.
-- Packaged smoke: **pass** từ extract của `uv_gpt_v1.2.6.zip`; package import
-  path trỏ đúng extract, version `1.2.6`, Symmetry U/V và invalid-sync
-  Pack/Center đều pass.
-- ZIP audit: **pass**; đúng 30 entries, source byte parity, không tests/
-  benchmarks/runtime/docs/cache; root có đúng một ZIP.
-- Locked fixture SHA trước/sau mọi source/package smoke:
-  `5CB51356284D731990D5F5CA481EDB64ACD4452B47802CAAE5EA5DB307C5D3B6`.
-- Blender ghi forward-version/ambient shutdown warning trong background nhưng
-  các process kiểm soát exit code `0`; không dùng interactive Blender 5.2 và
-  không save fixture.
-- UI, Undo, Blender 5.2 manual open-file flow và visual orientation trên asset
-  thật: **manual verification required**.
+- Z0: ZIP safety, full manifest, AST/import architecture audit — pass.
+- Z1: exact runtime path/SHA parity `38/38` — pass; ZIP SHA unchanged.
+- Z2: repository artifact alignment and focused pure/static checks — pass;
+  Blender/external-worker execution intentionally not run.
+- Z3: full suite, Blender 5.2 live smoke, external process timing, visual/Undo
+  checks and exact-stack numeric oracle — pending.
 
-## Giới hạn và handoff
+## Manual/Z3 gates
 
-- Bản đồ module và tên operator ở trên là evidence từ source hiện tại; các
-  claim live trong packet này chỉ áp dụng cho Blender 5.0 background smoke trên
-  fixture nêu rõ.
-- Capsules canonical tại `.context/features/align-to-selected.md`,
-  `.context/features/symmetry-position-only.md` và
-  `.context/features/pack-center-selection-scope.md` ghi contract, invariant
-  và verification scope tương ứng.
-- Nếu phát hiện regression thật trong Blender, ghi issue đang mở vào
-  `AI_ERROR_LOG.md` cùng bước tái kiểm tra; không dùng log cho validation thành
-  công.
+- Install/reload the ZIP in Blender 5.2.
+- Run Fast and Pro on real selected islands; verify nonblocking behavior,
+  progressive exact apply, skipped/failed reporting and cleanup.
+- Run Pack Selected/Whole/Symmetry with concave shapes and unselected blockers.
+- Switch between multiple UV maps and verify no unexpected UV Map 1 jump.
+- Verify UV Select Sync ON, active/history target resolution and Undo.
+- Capture an exact-stack numeric oracle and decide the `<= 1e-7` acceptance risk.
+
+No live Blender pass is claimed from Z2.

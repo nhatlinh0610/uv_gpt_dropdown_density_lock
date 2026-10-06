@@ -306,22 +306,56 @@ def _uv_loop_vertex_selected(loop, uv_layer):
     return bool(getattr(luv, "select", False))
 
 
+def _mesh_select_mode(context):
+    scene = getattr(context, "scene", None)
+    tool_settings = getattr(scene, "tool_settings", None)
+    mode = getattr(tool_settings, "mesh_select_mode", None)
+    try:
+        values = tuple(bool(value) for value in mode)
+    except TypeError:
+        values = ()
+    if len(values) >= 3:
+        return values[:3]
+    # Face selection is the safest fallback when Blender does not expose the
+    # mode tuple through the current context.
+    return (False, False, True)
+
+
+def _face_mesh_selected_for_uv_sync(context, face):
+    """Map Blender mesh selection to a UV-island seed without neighbor widening.
+
+    With UV Select Sync enabled, mesh selection is authoritative.  Face mode
+    can use BMFace.select directly.  Edge/vertex modes require the complete
+    face boundary to be selected so one shared edge/vertex does not pull a
+    neighboring UV island into selected-only operations.
+    """
+    if face.hide:
+        return False
+
+    use_vert, use_edge, use_face = _mesh_select_mode(context)
+    if use_face and bool(getattr(face, "select", False)):
+        return True
+    if use_edge:
+        edges = tuple(getattr(face, "edges", ()))
+        if edges and all(bool(getattr(edge, "select", False)) for edge in edges):
+            return True
+    if use_vert:
+        verts = tuple(getattr(face, "verts", ()))
+        if verts and all(bool(getattr(vert, "select", False)) for vert in verts):
+            return True
+    return False
+
+
 def _face_uv_selected_for_context(context, bm, face, uv_layer):
     """Mirror Blender's UV Editor selection predicate without mesh-island widening."""
     if face.hide:
         return False
 
-    use_sync = _context_uv_select_sync(context)
-    sync_valid = getattr(bm, "uv_select_sync_valid", None)
-    if use_sync:
-        # A synced BMesh that cannot represent UV selection independently is
-        # rejected by validate_uv_selection_scope before this predicate runs.
-        if sync_valid is not True:
-            return False
-        face_uv_selected = getattr(face, "uv_select", None)
-        if face_uv_selected is not None and bool(face_uv_selected):
-            return True
-        return any(_uv_loop_edge_selected(loop, uv_layer) for loop in face.loops)
+    if _context_uv_select_sync(context):
+        # UV Select Sync deliberately has no independent UV-loop scope.  Do not
+        # depend on bm.uv_select_sync_valid: Blender 5.x can leave that flag
+        # stale even while mesh selection itself is perfectly usable.
+        return _face_mesh_selected_for_uv_sync(context, face)
 
     # In UV Editor mode without sync, Blender requires the mesh face to be
     # selected and then consults the face/loop UV selection flags. Mesh edge or
@@ -347,18 +381,13 @@ def validate_uv_selection_scope(
     *,
     refresh_invalid_sync=False,
 ):
-    """Validate UV scope, optionally repairing Blender's stale sync bit."""
+    """Validate the selection source used by selected-only UV operations.
+
+    UV Select Sync intentionally uses mesh selection and therefore does not
+    require independent UV-loop flags or Blender's optional sync-valid bit.
+    """
     if _context_uv_select_sync(context):
-        sync_valid = getattr(bm, "uv_select_sync_valid", None)
-        if sync_valid is not True:
-            if refresh_invalid_sync:
-                refresh_uv_selection_scope(context, bm, uv_layer)
-                sync_valid = getattr(bm, "uv_select_sync_valid", None)
-            if sync_valid is not True:
-                raise RuntimeError(
-                    "UV Select Sync is not valid for this mesh; disable UV Sync "
-                    "to pack or center only the selected UV island."
-                )
+        return
 
     has_uv_face_state = any(
         getattr(face, "uv_select", None) is not None
@@ -386,7 +415,12 @@ def get_selected_uv_islands_for_context(
     *,
     refresh_invalid_sync=False,
 ):
-    """Return islands selected by UV-loop state, never by mesh-only flags."""
+    """Return selected UV islands using the active Blender selection model.
+
+    Sync OFF reads independent UV-loop selection.  Sync ON maps mesh
+    face/edge/vertex selection to island seeds without requiring the user to
+    disable UV Select Sync first.
+    """
     validate_uv_selection_scope(
         context,
         bm,
@@ -406,22 +440,15 @@ def get_selected_uv_islands_for_context(
 
 
 def _face_uv_selected_for_symmetry(context, bm, face, uv_layer):
-    """Read one visible UV face without widening through mesh edge/vertex flags.
-
-    Symmetry operates on selected *regions*, not UV islands.  In synced mode a
-    valid Blender sync state makes the mesh face selection the authoritative
-    scope.  Without sync, the mesh face must still be selected, but only UV
-    face/loop flags are allowed to mark it selected; mesh-only edge/vertex
-    flags are deliberately ignored because they are shared by neighbouring
-    faces and caused the original real-mesh leakage.
-    """
-    if face.hide or not face.select:
+    """Read one visible selected face for the topology-region Symmetry path."""
+    if face.hide:
         return False
 
     if _context_uv_select_sync(context):
-        if getattr(bm, "uv_select_sync_valid", None) is not True:
-            return False
-        return True
+        return _face_mesh_selected_for_uv_sync(context, face)
+
+    if not face.select:
+        return False
 
     face_uv_selected = getattr(face, "uv_select", None)
     if face_uv_selected is True:
@@ -440,21 +467,14 @@ def _face_uv_selected_for_symmetry(context, bm, face, uv_layer):
 
 
 def get_selected_uv_faces_for_symmetry(context, bm, uv_layer):
-    """Return selected UV-editor faces for the topology-region Symmetry path.
+    """Return selected faces for the topology-region Symmetry path.
 
-    This is intentionally separate from the legacy island predicate and from
-    Pack/Center's helper.  It preserves the latter APIs while giving Symmetry
-    an operation-specific, fail-closed selection contract.
+    Sync OFF uses UV-editor selection; Sync ON uses mesh selection, matching the
+    same selection contract as other selected-only tools.
     """
     try:
         validate_uv_selection_scope(context, bm, uv_layer)
     except RuntimeError as exc:
-        message = str(exc)
-        if "UV Select Sync" in message:
-            raise RuntimeError(
-                "UV Select Sync is not valid for Symmetry; disable UV Sync "
-                "before selecting two visible regions."
-            ) from exc
         raise RuntimeError(
             "Blender did not expose independent UV selection state for "
             "Symmetry; select the regions in the UV Editor and try again."

@@ -1,147 +1,173 @@
 # uv GPT v1.2.6
 
-uv GPT là Blender add-on cung cấp các công cụ UV cho layout đã unwrap, gồm
-đóng gói island, texel density, stack, symmetry, overlay và quản lý UV map.
+`uv GPT` là Blender add-on cho workflow UV đã unwrap: Pack V2, texel density,
+Stack Fast/Pro, symmetry, overlay và quản lý active UV map.
 
-## Yêu cầu
+Bản sửa ngày 2026-10-07 được kiểm tra qua MCP port 1234 trên bản sao của
+`GEO_Accessories_Combined`, Blender 5.2.2 LTS. Symmetry một island phản chiếu
+UV theo U/V; Pack Symmetry dùng correspondence để phản chiếu cả hình; Pack
+giữ đủ 88 follower sau Pro. Square/Paste nhận đúng selection khi Sync OFF,
+và worker bảo vệ dữ liệu khi source thay đổi. Xem bảng kiểm tra tại
+`tests/blender/accessories_mcp_report.md` và `CURRENT_STATE.md`.
 
-- Blender `3.6.0` trở lên.
-- Một mesh có UV map; các thao tác UV chính cần mở mesh ở Edit Mode.
-- File cài đặt: `uv_gpt_v1.2.6.zip`.
-- Artifact phân phối duy nhất của workspace là `uv_gpt_v1.2.6.zip`.
+Artifact hiện tại:
 
-## Cài đặt
+```text
+uv_gpt_v1.2.6.zip
+size: 367342 bytes
+SHA256: 4006c09f75cb3653b58a26f3903fc05bb20135376b80767e4a287158b08222e3
+runtime files: 38 Python files under uv_gpt/
+```
 
-1. Mở Blender → `Edit` → `Preferences` → `Add-ons`.
-2. Chọn `Install...`, trỏ tới `uv_gpt_v1.2.6.zip`, rồi xác nhận cài đặt.
-3. Tìm `uv GPT` trong danh sách add-on và bật checkbox.
-4. Lưu Preferences nếu muốn Blender giữ trạng thái bật cho các lần mở sau.
+## Yêu cầu và cài đặt
 
-## Mở giao diện
+- Blender `3.6.0` trở lên theo `bl_info`; đã live test các case trong báo cáo
+  trên Blender 5.2.2 LTS. Các phiên bản khác chưa được kiểm tra trong lần này.
+- Mesh có UV map và đang ở `Edit Mode`.
+- Artifact cài trực tiếp: `uv_gpt_v1.2.6.zip`.
 
-1. Chọn một mesh và vào `Edit Mode`.
-2. Mở `UV Editor` (hoặc chuyển một vùng Image Editor sang chế độ UV).
-3. Nhấn `N` để mở Sidebar, chọn tab `uv GPT`.
-4. Mở các nhóm `Pack`, `Density`, `Stack`, `Symmetry`, `Overlay` và `UV Map`
-   bằng cách bấm tiêu đề nhóm.
+Cài bằng `Edit → Preferences → Add-ons → Install...`, chọn ZIP, bật `uv GPT`,
+sau đó mở `UV Editor → N Sidebar → uv GPT`.
 
-Nếu không thấy panel, kiểm tra vùng hiện tại là UV Editor/Image Editor, object là
-mesh và đang ở Edit Mode.
+## Workflow hiện tại
 
-## Quy trình an toàn nên dùng
-
-1. Lưu file `.blend` trước khi thao tác; với layout quan trọng, làm trên một
-   bản sao hoặc mesh test.
-2. Chọn đúng UV map và chọn các face/island cần tác động.
-3. Nếu cần bản dự phòng ngay trong file, mở nhóm `UV Map` và bật
-   `Duplicate before operations`; tùy chọn này dùng tên map `Bake_Optimized`.
-4. Chạy một thao tác nhỏ trên mesh test trước, kiểm tra UV và undo khi cần.
-
-Các lệnh pack, scale, mirror, stack và grid có thể thay đổi UV. Tùy chọn backup
-không thay thế việc lưu file và kiểm tra trên bản sao.
-
-## Các nhóm chức năng
-
-| Nhóm | Chức năng hiện có |
+| Nhóm | ZIP-authoritative behavior |
 |---|---|
-| `Pack` | `Pack Selected` hoặc `Pack Whole Mesh`; chỉnh margin, rotation; có lựa chọn khóa density, xử lý UV chưa chọn và giữ stack; `Center Selected` căn island đã chọn về tâm tile. Pack/Center selected-only tự refresh một lần trạng thái UV Sync stale trước khi ghi UV, không cần Unwrap; phần complement không bị đổi. |
-| `Density` | Chọn texture size, đơn vị `px/cm` hoặc `px/unit`, nhập target; xem density của selected/all, lấy target từ selection, áp dụng cho selected/whole mesh; `Square Face` và `Grid Mesh` tạo UV theo density mục tiêu. |
-| `Stack` | `Paste Keep Position` và `Align To Selected`; align dùng Border Shape, với tùy chọn `Match Scale`, `Allow Flipping` và `Similarity Tolerance`. |
-| `Symmetry` | Chọn anchor trước, Shift-chọn target rồi chạy `Mirror Target Position` theo trục U hoặc V tại 0.5. Anchor là vùng thứ nhất; target là vùng thứ hai theo selection history hợp lệ, fallback về active face. Operator chỉ dịch toàn bộ target bằng một delta từ tâm bounding-box phản chiếu; rotation, scale, hướng, shape và offset nội bộ của target được giữ nguyên. UI Symmetry chỉ còn U/V và một action; các property legacy rotation/scale vẫn ẩn để tương thích file cũ. |
-| `Overlay` | Bật số island, phần trăm area và texel density trong UV Editor; dùng `Refresh Overlay` để cập nhật nhãn. |
-| `UV Map` | Chọn UV map active và tùy chọn duplicate map hiện tại thành `Bake_Optimized` trước các thao tác có thể phá dữ liệu UV. |
+| `Pack` | Ba nút user-facing là `Pack Selected`, `Pack Whole Mesh`, `Pack Symmetry`; cả ba đi qua Pack V2 external worker. Selected chỉ emit writes cho selected movable islands, giữ unselected UV nguyên vẹn nhưng dùng geometry unselected làm blocker. Whole Mesh cho phép toàn bộ island di chuyển. Symmetry pair theo axis/density/shape và giữ constraint mirror. |
+| `Stack Fast` | Operator `uv_gpt.align_similar_pro_fast`; snapshot nhỏ được xử lý bởi `fast_v2_worker.py`/`fast_v2_core.py` ngoài Blender, operator nonblocking, apply atomically khi đúng source context và active UV map. |
+| `Stack Pro` | Operator `uv_gpt.align_similar_pro_snap`; correspondence topology/loop-to-loop chạy ngoài Blender qua `pro_exact_v2_worker.py`/`pro_exact_v2_core.py`, target exact được apply progressive. Skipped, failed và completion đều được báo. |
+| `Keep Stack Exact` | Property `pack_preserve_stacks` giữ topology correspondence và final exact master-copy. Fixture Accessories đã xác nhận cả 88 follower giữ UV exact sau Pack Whole và Pack Symmetry; sai số ghi vào Blender dưới `1e-7`. |
+| `Overlay` | Progress dùng format `percent • elapsed • done/total`; Fast/Pro/Pack giữ label trong background polling và có completion hold trước cleanup. |
+| `UV Map` | Actual `obj.data.uv_layers.active` là nguồn sự thật. Job snapshot giữ `uv_map_name` và không apply khi object/mode/active UV map không khớp. |
+| `UV Select Sync` | Khi Sync ON, mesh face/edge/vertex selection là selection source; route không dùng stale `uv_select_sync_valid` hoặc refresh helper cũ làm validity gate. Khi Sync OFF, independent UV selection flags được kiểm tra. |
 
-### Symmetry position-only
+## Pack V2
 
-Trong nhóm `Symmetry`, chọn đúng hai vùng topology: anchor trước, target sau.
-Selection history hợp lệ quyết định target; nếu history không dùng được thì
-active face là fallback. Chọn `U` hoặc `V`, rồi bấm `Mirror Target Position`.
-Add-on lấy tâm bounding-box UV của anchor, phản chiếu tâm đó qua `U=0.5` hoặc
-`V=0.5`, và cộng cùng một delta cho mọi loop của target. Vì vậy target không bị
-xoay, scale, đổi hướng hoặc biến dạng; anchor và mọi loop ngoài target giữ
-nguyên. Selection không hợp lệ hoặc không phân giải được target sẽ hủy với
-zero-write.
+### Pack Selected
 
-### Pack/Center selected-only và file mở có UV Sync stale
+`Pack Selected` chạy external Pack V2 với contract:
 
-`Pack Selected` (cả `LOCK_UNSELECTED` và `IGNORE_UNSELECTED`) và `Center
-Selected` chỉ ghi lên scope UV đang chọn. Nếu file mở khiến Blender báo
-`uv_select_sync_valid=False`, add-on refresh trạng thái selection một lần bằng
-API edit-mesh/BMesh, giữ nguyên UV coordinates, selection, active face/history,
-UV map và mode; không gọi Unwrap, Smart Project, Pack, Select All hoặc thao tác
-đổi tọa độ trong bước refresh. Nếu không xác lập được scope tin cậy, thao tác
-hủy an toàn và không ghi dữ liệu. `Pack Whole Mesh` vẫn là lựa chọn chủ ý để
-cho phép thay đổi toàn bộ mesh.
+1. Selected islands là movable islands.
+2. Unselected UVs không bị ghi.
+3. Unselected actual geometry được giữ làm static blocker để layout không
+   overlap vào vùng đang tồn tại.
+4. `Keep Current Scale = OFF` cho phép scale-to-fit tile 0–1.
+5. `Keep Current Scale = ON` giữ scale hiện tại và reuse layout gốc nếu đã hợp
+   lệ. Nếu không tìm được layout thỏa tile, blocker và margin, job báo failure
+   trước khi ghi UV.
+6. `Keep Stack Exact` khôi phục follower UV bằng exact topology mapping.
 
-Tên và nhóm trên đây phản ánh UI/source hiện tại. Hiệu quả thực tế còn phụ thuộc
-mesh, UV selection, topology, không gian UV và tùy chọn Blender đang dùng.
+Pack V2 dùng actual boundary geometry, gồm concave/disjoint/hole shape khi
+kiểm tra collision. Không dùng bounding-box-only behavior làm nguồn cuối.
 
-Trong nhóm `Stack`, chọn một hoặc nhiều UV island làm target/reference rồi bấm
-`Align To Selected`. Các island tương tự nhưng chưa chọn sẽ được tìm và căn
-chồng lên target phù hợp; target đã chọn không bị di chuyển. Khi có nhiều target,
-mỗi island chưa chọn dùng target có similarity score tốt nhất. `Paste Keep
-Position` là thao tác riêng và không dùng dispatch của `Align To Selected`.
+### Pack Whole Mesh
 
-### Matcher và CPU policy
+`Pack Whole Mesh` gửi mode `whole` tới `pack_v2_worker.py`; tất cả island được
+coi là movable, vẫn qua snapshot/context guard và atomic apply.
 
-`Align To Selected` dùng một implementation Python độc lập của project; nó
-không phải engine hay algorithm của UVPackmaster và không tuyên bố tương đương
-với UVPackmaster. Matcher dựng ordered UV border loops, phân biệt outer/hole,
-resample theo arclength với số mẫu giới hạn, thử cyclic/reverse winding và fit
-transform similarity 2D bằng Procrustes/Kabsch-style math. Cheap raw-boundary và
-topology gates chạy trước; full descriptors chỉ dựng cho candidate đã qua gate,
-cache chỉ sống trong một operator execution.
+### Pack Symmetry
 
-Mọi thao tác `bpy`/`bmesh` extraction và UV apply đều ở main thread. `AUTO` dùng
-single worker cho case fixture thực vì chỉ còn một full fit; NumPy threads chỉ
-dành cho batch numeric lớn khi benchmark chứng minh có lợi. ProcessPool đã được
-đánh giá nhưng không ship do overhead/lifecycle/serialization trên Windows và
-Blender; pure-Python dưới GIL mặc định chạy single.
+`Pack Symmetry` gửi mode `symmetry` tới Pack V2:
 
-### MATCH-04 evidence
+- tính density scale từ selected/world area; cặp phản chiếu dùng một scale
+  chung để giữ hình UV mirror exact. Khi world area hai bên khác nhau, không
+  thể đồng thời giữ UV mirror exact và ép texel density hai bên bằng nhau;
+- pair island tương thích bằng shape/topology/fingerprint;
+- đặt pair đối xứng qua `U_HALF` hoặc `V_HALF`;
+- xử lý single island nằm trên axis;
+- dùng exact polygon collision và static blockers;
+- chỉ apply vào selected movable islands.
 
-Trên `C:\Users\linhp\Downloads\cc.blend`, đọc read-only bằng Blender portable
-5.0.0, fixture SHA trước/sau giữ nguyên. Fixture được lưu bởi Blender 5.2.44,
-vì vậy Blender 5.0 cảnh báo forward-version khi mở file.
+## Stack Fast / Pro
 
-- MATCH-01 old matcher: median `634.806 ms`.
-- MATCH-02 correct matcher: median `1005.188 ms`.
-- MATCH-03 optimized correct matcher: min `642.855 ms`, median `673.303 ms`,
-  p95 `720.866 ms`.
-- MATCH-03 nhanh khoảng `33.0%` so với MATCH-02 nhưng chậm khoảng `6.1%` so
-  với matcher cũ đơn giản trên fixture này; scheduler không phải bottleneck.
-- Pruning: `576` candidates → `3` raw-compatible → `1` coarse → `1` topology →
-  `1` full fit; đúng `1` candidate thay đổi, selected target immutable, max
-  normalized RMS `2.7421e-06`.
-- Package smoke từ ZIP đã extract: Blender `5.0.0`, NumPy `1.26.4`, version
-  `1.2.6`, operator `uv_gpt.align_to_selected`, 1 warmup + 3 measured;
-  min/median/p95 lần lượt `671.906/708.489/728.967 ms`. Cả selected UV và
-  selection đều giữ nguyên, incompatible changes `0`, đúng 1 candidate đổi
-  trong mỗi run, register/unregister sạch.
-- Artifact hiện tại: `uv_gpt_v1.2.6.zip`, 30 entries, `306,757` bytes,
-  SHA256 `217B60633748883B589CCEEDAC6860CEED5B55E8775C8843A07A2DC868CA3FA7`.
-  ZIP chỉ chứa package `uv_gpt/`; tests, benchmarks, runtime, docs và cache
-  không nằm trong artifact.
+### Fast V2
 
-Benchmark JSON và package smoke evidence nằm trong `benchmarks/`, gồm
-`match_03_fixture.json`, `match_03_synthetic.json` và `match_04_package_smoke.json`.
-Kết quả chỉ chứng minh các case đo được; không gọi kết quả là “beautiful” và
-không mở rộng claim sang UVPackmaster.
+Fast V2 route:
 
-## Tắt, bật lại và reload
+```text
+UVGPT_OT_align_similar_pro_fast
+  -> _fast_v2_capture_snapshot
+  -> _fast_v2_start_job
+  -> fast_v2_worker.py
+  -> fast_v2_core.solve_fast
+  -> _fast_v2_background_timer
+```
 
-- Tắt: vào `Preferences` → `Add-ons`, tìm `uv GPT`, bỏ chọn checkbox.
-- Bật lại: chọn lại checkbox đó.
-- Khi thay ZIP bằng bản mới: tắt add-on, cài `uv_gpt_v1.2.6.zip` trong `Install...`,
-  rồi bật lại và kiểm tra version hiển thị trong panel.
-- Khi đang phát triển source và UI chưa cập nhật, có thể dùng `F3` →
-  `Reload Scripts` hoặc đóng/mở lại Blender; sau đó kiểm tra lại panel và
-  operator trên mesh test.
+Blender chỉ capture immutable primitive snapshot, khởi chạy external process và
+poll result/progress bằng timer. Nếu source object, Edit Mode, topology, UV data
+hoặc actual active UV map thay đổi, result không được apply nhầm.
 
-## Giới hạn cần nhớ
+### Pro Exact V2
 
-- Đây là bộ công cụ UV; tài liệu này không cam kết unwrap tự động hay xử lý
-  texture/material.
-- Exact-fixture package smoke đã được kiểm tra read-only trong Blender 5.0.0;
-  UI context, Undo, multi-target/no-match và kết quả trên asset thật vẫn cần
-  người dùng kiểm tra thủ công trên bản sao trước khi dùng cho asset thật.
+Pro route:
+
+```text
+UVGPT_OT_align_similar_pro_snap
+  -> _pro_exact_v2_start_job
+  -> pro_exact_v2_worker.py
+  -> pro_exact_v2_core.solve_exact
+  -> topology_correspondence
+  -> _pro_exact_v2_apply_pending_updates
+```
+
+Pro chỉ coi correspondence complete topology/loop mapping là exact result.
+Heavy search nằm ngoài Blender. Proven targets được stream qua update files và
+apply theo bounded timer ticks; target không chứng minh được correspondence
+được ghi là skipped/unproven, worker failure được báo là failed, và completion
+giữ progress trước khi cleanup.
+
+> Các legacy operator/backend class còn được ZIP giữ để compatibility với file
+> `.blend` và harness cũ, nhưng không phải Fast/Pro user-facing panel route.
+
+## Mirror Symmetry
+
+Đây là operator riêng `uv_gpt.symmetry_auto_mirror`, khác với Pack Symmetry:
+
+- 1 region: U phản chiếu `u' = 1 - u`, V phản chiếu `v' = 1 - v`; giữ nguyên
+  scale và tọa độ còn lại. Nút `Center Selected` vẫn dùng để căn giữa;
+- 2 regions: anchor + target, mirror vị trí target qua axis và match rotation /
+  uniform scale theo contract của ZIP;
+- selection history/active face được dùng để resolve target;
+- selection ambiguity hủy an toàn và report `INFO`, không có popup đỏ sai.
+
+## Active UV map và selection safety
+
+`uv_utils.ensure_destructive_ready` đọc actual active UV layer, không ép
+dropdown setting sang một map khác. `set_active_uv_map` đồng bộ data/BMesh layer
+khi người dùng thực sự yêu cầu đổi map. Job apply luôn kiểm tra `uv_map_name` đã
+capture.
+
+Khi UV Select Sync ON, mesh selection là authoritative. Selected-only routes
+không gọi `refresh_uv_selection_scope` và không dựa vào
+`uv_select_sync_valid` làm validity gate; helper cũ vẫn tồn tại trong ZIP để
+giữ compatibility. Đây là điểm khác với stale repo behavior trước Z1.
+
+## Overlay
+
+Progress center text có format chính xác:
+
+```text
+{percent:.0f}%  •  {elapsed:.1f}s  •  {done}/{total}
+```
+
+Overlay giữ Fast label, Pro/Pack labels, elapsed/done/total và done-hold trước
+khi timer/draw handler được cleanup.
+
+## Reload khi thay build
+
+Sau khi cài ZIP mới, nên disable/enable add-on hoặc restart Blender. Nếu đang
+phát triển source trực tiếp có thể dùng `F3 → Reload Scripts`, nhưng restart là
+cách chắc nhất để tránh module Python cũ còn trong RAM.
+
+## Verification status
+
+- Z0: ZIP safety, full manifest, AST/import architecture audit — pass.
+- Z1: repo `uv_gpt/` exact `38/38` path+SHA parity — pass.
+- Z2: repository artifact alignment and focused pure/static checks — pass;
+  Blender/external-worker execution intentionally not run.
+- Z3 pending: full suite, live Blender 5.2 smoke, external process behavior,
+  visual/Undo checks, and exact-stack numeric oracle.
+
+Không claim live Blender pass trong môi trường không có Blender executable.
+Trước khi dùng trên asset quan trọng, test trên bản sao `.blend` các route Pack
+Selected/Whole/Symmetry, Fast, Pro, active UV map, UV Sync ON và Undo.

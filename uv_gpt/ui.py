@@ -61,12 +61,15 @@ def draw_uv_gpt_panel(layout, context):
     if box:
         box.prop(settings, "margin")
         box.prop(settings, "rotation_mode")
-        box.prop(settings, "pack_selected_lock_density")
-        box.prop(settings, "pack_selected_unselected_mode")
+        box.prop(settings, "pack_selected_keep_current_scale_v2")
         box.prop(settings, "pack_preserve_stacks")
         row = box.row(align=True)
         row.operator("uv_gpt.pack_selected")
         row.operator("uv_gpt.pack_whole_mesh")
+        row = box.row(align=True)
+        row.operator("uv_gpt.pack_symmetry", text="Pack Symmetry")
+        row.prop_enum(settings, "symmetry_axis", "U_HALF", text="U")
+        row.prop_enum(settings, "symmetry_axis", "V_HALF", text="V")
         box.operator("uv_gpt.center_selected")
 
     box = _section(layout, settings, "ui_show_texel_density", "Density")
@@ -94,23 +97,23 @@ def draw_uv_gpt_panel(layout, context):
         box.prop(settings, "stack_match_scale")
         box.prop(settings, "stack_allow_flipping")
         box.prop(settings, "stack_similarity_tolerance")
+        box.operator("uv_gpt.paste_keep_position")
         row = box.row(align=True)
-        row.operator("uv_gpt.paste_keep_position")
-        row.operator("uv_gpt.align_to_selected", text="Align Similar")
-        row = box.row(align=True)
-        row.operator("uv_gpt.align_similar_pro_fast", text="Pro Fast")
-        row.operator("uv_gpt.align_similar_pro_exact", text="Pro Exact")
+        row.operator_context = "INVOKE_DEFAULT"
+        row.operator("uv_gpt.align_similar_pro_fast", text="Fast")
+        row.operator("uv_gpt.align_similar_pro_snap", text="Pro")
 
     box = _section(layout, settings, "ui_show_symmetry", "Symmetry")
     if box:
-        box.label(text="Select anchor first, then Shift-select target")
+        box.label(text="1 island: Mirror across U=0.5 or V=0.5 (no scale)")
+        box.label(text="2 islands: Anchor first, target active/last")
         row = box.row(align=True)
         row.label(text="Axis")
         row.prop_enum(settings, "symmetry_axis", "U_HALF", text="U")
         row.prop_enum(settings, "symmetry_axis", "V_HALF", text="V")
         if settings.symmetry_axis not in {"U_HALF", "V_HALF"}:
-            box.label(text="Choose U or V before running symmetry", icon="ERROR")
-        box.operator("uv_gpt.symmetry_auto_mirror", text="Mirror Target Position")
+            box.label(text="Choose U or V before pair symmetry", icon="INFO")
+        box.operator("uv_gpt.symmetry_auto_mirror", text="Mirror Symmetry")
 
     box = _section(layout, settings, "ui_show_overlay", "Overlay")
     if box:

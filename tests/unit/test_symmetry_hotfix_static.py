@@ -54,7 +54,8 @@ class SymmetryHotfixStaticTests(unittest.TestCase):
         self.assertNotIn('"CUSTOM_V"', source)
         self.assertIn('prop_enum(settings, "symmetry_axis", "U_HALF"', symmetry_ui)
         self.assertIn('prop_enum(settings, "symmetry_axis", "V_HALF"', symmetry_ui)
-        self.assertIn('Mirror Target Position', symmetry_ui)
+        self.assertIn('Mirror Symmetry', symmetry_ui)
+        self.assertIn('1 island: Mirror across U=0.5 or V=0.5 (no scale)', symmetry_ui)
         self.assertNotIn('prop(settings, "custom_axis_value")', symmetry_ui)
         self.assertNotIn('prop(settings, "keep_inside_tile")', symmetry_ui)
         self.assertNotIn("match_rotation", symmetry_ui)
@@ -70,7 +71,7 @@ class SymmetryHotfixStaticTests(unittest.TestCase):
         self.assertIn("get_selected_uv_regions_for_context", source)
         self.assertNotIn("get_selected_uv_islands(bm, uv_layer)", source)
         self.assertNotIn("get_active_uv_island", source)
-        self.assertIn("exactly two connected UV regions", source)
+        self.assertIn("Select one UV region to mirror, or two UV regions to mirror", source)
 
     def test_region_helper_is_topology_connected_and_never_spatially_merged(self):
         source = ISLAND_SOURCE.read_text(encoding="utf-8")
@@ -79,7 +80,9 @@ class SymmetryHotfixStaticTests(unittest.TestCase):
         self.assertIn("get_selected_uv_regions_for_context", source)
         self.assertIn("edge.link_faces", source)
         self.assertIn("never merged by spatial", source)
-        self.assertIn("uv_select_sync_valid", source)
+        self.assertIn("_face_mesh_selected_for_uv_sync", source)
+        self.assertIn("mesh selection is authoritative", source)
+        self.assertIn("def refresh_uv_selection_scope", source)
 
     def test_active_history_target_precedes_stale_bmesh_active_fallback(self):
         island_source = ISLAND_SOURCE.read_text(encoding="utf-8")
@@ -96,7 +99,7 @@ class SymmetryHotfixStaticTests(unittest.TestCase):
     def test_invalid_target_cancels_without_writing(self):
         source = SYMMETRY_SOURCE.read_text(encoding="utf-8")
         self.assertIn("target_index is None", source)
-        self.assertIn("without writing UVs", source)
+        self.assertIn("Could not resolve the target region", source)
 
     def test_symmetry_transforms_all_target_region_loops(self):
         source = SYMMETRY_SOURCE.read_text(encoding="utf-8")
@@ -106,17 +109,13 @@ class SymmetryHotfixStaticTests(unittest.TestCase):
         self.assertIn("get_island_bounds", source)
         self.assertIn("target_loops = _region_loops(target_region)", source)
         self.assertIn("desired_target_center", source)
-        self.assertIn("delta = desired_target_center - target_center", source)
-        self.assertIn("uv_utils.translate_island(target_loops", source)
-        for forbidden in (
-            "get_island_main_axis_farthest_points",
-            "rotate_island",
-            "scale_island",
-            "match_rotation",
-            "match_scale",
-            "Keep Parallel",
-        ):
-            self.assertNotIn(forbidden, source)
+        self.assertIn("_mirror_direction", source)
+        self.assertIn("_rotation_angle", source)
+        self.assertIn("_apply_similarity_transform", source)
+        self.assertIn("scale = ref_radius / target_radius", source)
+        self.assertIn("uv_utils.translate_island(", source)
+        self.assertIn("_center_and_align_single_region", source)
+        self.assertIn("tile_center = Vector((0.5, 0.5))", source)
 
 
 if __name__ == "__main__":

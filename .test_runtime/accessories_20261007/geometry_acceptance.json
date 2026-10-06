@@ -1,0 +1,115 @@
+{
+  "zip_sha256": "4006c09f75cb3653b58a26f3903fc05bb20135376b80767e4a287158b08222e3",
+  "pack_core_sha256": "8ef084855a990eaa77e30cfbcfb8b40f864259412f2211ded5a27f37fe846187",
+  "cases": {
+    "post_pack_selected": {
+      "pass": true,
+      "movable": 2,
+      "static": 147,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 0,
+      "mirror_pairs": 0,
+      "mirror_error": null,
+      "elapsed": 5.045999999972992
+    },
+    "post_pack_whole_cardinal": {
+      "pass": true,
+      "movable": 149,
+      "static": 0,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 0,
+      "mirror_pairs": 0,
+      "mirror_error": null,
+      "elapsed": 4.469000000040978
+    },
+    "post_pack_keep_current_scale": {
+      "pass": true,
+      "movable": 149,
+      "static": 0,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 0,
+      "mirror_pairs": 0,
+      "mirror_error": null,
+      "elapsed": 4.35999999998603
+    },
+    "post_pack_whole_mesh_keep_stack": {
+      "pass": true,
+      "movable": 149,
+      "static": 0,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 88,
+      "mirror_pairs": 0,
+      "mirror_error": null,
+      "elapsed": 3.8429999999934807
+    },
+    "post_pack_symmetry_U_all": {
+      "pass": true,
+      "movable": 149,
+      "static": 0,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 0,
+      "mirror_pairs": 58,
+      "mirror_error": 2.220446049250313e-16,
+      "elapsed": 4.952999999979511
+    },
+    "post_pack_symmetry_V_all": {
+      "pass": true,
+      "movable": 149,
+      "static": 0,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 0,
+      "mirror_pairs": 58,
+      "mirror_error": 2.220446049250313e-16,
+      "elapsed": 5.297000000020489
+    },
+    "post_pack_symmetry_keep_stack": {
+      "pass": true,
+      "movable": 149,
+      "static": 0,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 88,
+      "mirror_pairs": 0,
+      "mirror_error": null,
+      "elapsed": 4.625
+    },
+    "post_pack_symmetry_U_pair": {
+      "pass": true,
+      "movable": 2,
+      "static": 147,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 0,
+      "mirror_pairs": 1,
+      "mirror_error": 0.0,
+      "elapsed": 5.577999999979511
+    },
+    "post_pack_symmetry_V_pair": {
+      "pass": true,
+      "movable": 2,
+      "static": 147,
+      "raw_unrelated_collisions": 0,
+      "movable_margin_violations": 0,
+      "selected_out_of_tile": 0,
+      "stack_followers": 0,
+      "mirror_pairs": 1,
+      "mirror_error": 0.0,
+      "elapsed": 6.73499999998603
+    }
+  },
+  "pass": true
+}

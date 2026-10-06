@@ -93,7 +93,9 @@ def _labels_for_islands(context, selected_only):
     bm = island_tools.get_active_bmesh(context)
     uv_layer = island_tools.get_active_uv_layer(bm, obj)
     islands = (
-        island_tools.get_selected_uv_islands(bm, uv_layer)
+        island_tools.get_selected_uv_islands_for_context(
+            context, bm, uv_layer, refresh_invalid_sync=True
+        )
         if selected_only
         else island_tools.get_uv_islands(bm, uv_layer, selected_only=False)
     )
@@ -126,7 +128,9 @@ def _selected_average_px_cm(context):
     obj = uv_utils.get_active_mesh_object(context)
     bm = island_tools.get_active_bmesh(context)
     uv_layer = island_tools.get_active_uv_layer(bm, obj)
-    islands = island_tools.get_selected_uv_islands(bm, uv_layer)
+    islands = island_tools.get_selected_uv_islands_for_context(
+        context, bm, uv_layer, refresh_invalid_sync=True
+    )
     if not islands:
         raise RuntimeError("Select one or more UV islands.")
     values = [calculate_island_px_cm(context, obj, island, uv_layer) for island in islands]
@@ -158,56 +162,142 @@ def apply_px_cm_to_selection(context, px_cm):
     obj = uv_utils.get_active_mesh_object(context)
     bm = island_tools.get_active_bmesh(context)
     uv_layer = island_tools.get_active_uv_layer(bm, obj)
-    islands = island_tools.get_selected_uv_islands(bm, uv_layer)
+    islands = island_tools.get_selected_uv_islands_for_context(
+        context, bm, uv_layer, refresh_invalid_sync=True
+    )
     if not islands:
         raise RuntimeError("Select one or more UV islands.")
     return apply_px_cm_to_islands(context, islands, px_cm)
 
 
+def _optional_selection_flag(owner, attribute):
+    """Return ``(value, available)`` for a Blender selection property.
+
+    Blender 5.x moved UV selection from ``BMLoopUV.select`` and
+    ``BMLoopUV.select_edge`` to ``BMFace.uv_select`` and the corresponding
+    ``BMLoop.uv_select_*`` flags.  Keeping availability separate from the
+    value prevents a stale mesh-face selection from being treated as UV
+    selection when the current API explicitly reports ``False``.
+    """
+
+    try:
+        value = getattr(owner, attribute, None)
+    except (AttributeError, ReferenceError, RuntimeError):
+        return False, False
+    if value is None:
+        return False, False
+    return bool(value), True
+
+
+def _face_uv_selection_state(face, uv_layer):
+    """Return ``(selected, has_uv_selection_api)`` for one mesh face."""
+
+    selected = False
+    has_api = False
+
+    value, available = _optional_selection_flag(face, "uv_select")
+    selected = selected or value
+    has_api = has_api or available
+
+    for loop in getattr(face, "loops", ()):
+        for attribute in ("uv_select_vert", "uv_select_edge"):
+            value, available = _optional_selection_flag(loop, attribute)
+            selected = selected or value
+            has_api = has_api or available
+
+        try:
+            luv = loop[uv_layer]
+        except (AttributeError, KeyError, TypeError, ReferenceError, RuntimeError):
+            luv = None
+        if luv is None:
+            continue
+        for attribute in ("select", "select_edge"):
+            value, available = _optional_selection_flag(luv, attribute)
+            selected = selected or value
+            has_api = has_api or available
+
+    return selected, has_api
+
+
 def _face_uv_selected(face, uv_layer):
-    if face.hide:
+    if getattr(face, "hide", False):
         return False
-    if _face_has_uv_selection(face, uv_layer):
-        return True
-    return bool(face.select)
+    selected, has_api = _face_uv_selection_state(face, uv_layer)
+    if selected or has_api:
+        return selected
+    # Older Blender builds without independent UV selection properties only
+    # expose the mesh-face flag, which is the safe compatibility fallback.
+    return bool(getattr(face, "select", False))
 
 
 def _face_has_uv_selection(face, uv_layer):
-    for loop in face.loops:
-        luv = loop[uv_layer]
-        if getattr(luv, "select", False) or getattr(luv, "select_edge", False):
+    """Return whether current UV selection flags select part of ``face``."""
+
+    selected, _has_api = _face_uv_selection_state(face, uv_layer)
+    return selected and not getattr(face, "hide", False)
+
+
+def _context_uv_select_sync(context):
+    scene = getattr(context, "scene", None)
+    tool_settings = getattr(scene, "tool_settings", None)
+    return bool(getattr(tool_settings, "use_uv_select_sync", False))
+
+
+def _mesh_select_mode(context):
+    scene = getattr(context, "scene", None)
+    tool_settings = getattr(scene, "tool_settings", None)
+    mode = getattr(tool_settings, "mesh_select_mode", None)
+    try:
+        values = tuple(bool(value) for value in mode)
+    except TypeError:
+        values = ()
+    if len(values) >= 3:
+        return values[:3]
+    return (False, False, True)
+
+
+def _face_mesh_selected_for_uv_sync(context, face):
+    """Map mesh selection to one reference face while UV sync is enabled."""
+
+    if getattr(face, "hide", False):
+        return False
+    use_vert, use_edge, use_face = _mesh_select_mode(context)
+    if use_face and bool(getattr(face, "select", False)):
+        return True
+    if use_edge:
+        edges = tuple(getattr(face, "edges", ()))
+        if edges and all(bool(getattr(edge, "select", False)) for edge in edges):
+            return True
+    if use_vert:
+        verts = tuple(getattr(face, "verts", ()))
+        if verts and all(bool(getattr(vert, "select", False)) for vert in verts):
             return True
     return False
 
 
-def _selected_reference_face(bm, uv_layer):
-    active_face = getattr(bm.faces, "active", None)
-    if isinstance(active_face, bmesh.types.BMFace) and _face_has_uv_selection(active_face, uv_layer):
-        return active_face
+def _reference_face_is_selected(context, bm, face, uv_layer):
+    if _context_uv_select_sync(context):
+        # Keep this predicate aligned with the shared island selection
+        # contract when available.  The local fallback keeps the density
+        # helper usable in older Blender versions and focused unit tests.
+        selector = getattr(island_tools, "_face_mesh_selected_for_uv_sync", None)
+        if callable(selector):
+            return bool(selector(context, face))
+        return _face_mesh_selected_for_uv_sync(context, face)
+    return _face_uv_selected(face, uv_layer)
 
-    history = getattr(bm, "select_history", None)
-    active = getattr(history, "active", None) if history else None
-    if isinstance(active, bmesh.types.BMFace) and _face_has_uv_selection(active, uv_layer):
-        return active
 
-    selected = [face for face in bm.faces if _face_has_uv_selection(face, uv_layer)]
+def _selected_reference_face(bm, uv_layer, context=None):
+    selected = [
+        face
+        for face in bm.faces
+        if _reference_face_is_selected(context, bm, face, uv_layer)
+    ]
     if len(selected) == 1:
         return selected[0]
     if len(selected) > 1:
         raise RuntimeError("Select only one quad face to use as the density square.")
-
-    if isinstance(active_face, bmesh.types.BMFace) and _face_uv_selected(active_face, uv_layer):
-        return active_face
-    if isinstance(active, bmesh.types.BMFace) and _face_uv_selected(active, uv_layer):
-        return active
-
-    if not selected:
-        selected = [face for face in bm.faces if _face_uv_selected(face, uv_layer)]
-    if not selected:
-        raise RuntimeError("Select one quad face to use as the density square.")
-    if len(selected) > 1:
-        raise RuntimeError("Select only one quad face to use as the density square.")
-    return selected[0]
+    raise RuntimeError("Select one quad face to use as the density square.")
 
 
 def _face_uv_center(face, uv_layer):
@@ -272,7 +362,7 @@ def square_selected_face_to_px_cm(context, px_cm, ensure_ready=True):
     obj = uv_utils.get_active_mesh_object(context)
     bm = island_tools.get_active_bmesh(context)
     uv_layer = island_tools.get_active_uv_layer(bm, obj)
-    face = _selected_reference_face(bm, uv_layer)
+    face = _selected_reference_face(bm, uv_layer, context=context)
     side = _square_face_to_px_cm(context, obj, face, uv_layer, px_cm)
     bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
     return side
@@ -397,7 +487,7 @@ def grid_whole_mesh_from_selected_face(context, px_cm, ensure_ready=True):
     obj = uv_utils.get_active_mesh_object(context)
     bm = island_tools.get_active_bmesh(context)
     uv_layer = island_tools.get_active_uv_layer(bm, obj)
-    reference_face = _selected_reference_face(bm, uv_layer)
+    reference_face = _selected_reference_face(bm, uv_layer, context=context)
     if len(reference_face.loops) != 4:
         raise RuntimeError("The density grid needs one selected quad face.")
 

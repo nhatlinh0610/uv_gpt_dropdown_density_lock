@@ -71,11 +71,26 @@ def duplicate_to_bake_optimized(context):
 
 
 def ensure_destructive_ready(context):
+    """Prepare a destructive UV edit without changing the user's active UV map.
+
+    The active UV layer in Blender is authoritative.  The add-on dropdown may
+    lag behind when the user switches UV maps from Blender's own UI, so tools
+    must never force the stored dropdown value back onto the mesh.
+    """
     settings = get_settings(context)
     if settings.duplicate_before_operations:
         return duplicate_to_bake_optimized(context)
-    if settings.active_uv_map and settings.active_uv_map != "NONE":
-        set_active_uv_map(context, settings.active_uv_map)
+
+    obj = get_active_mesh_object(context)
+    active = obj.data.uv_layers.active if obj.data.uv_layers else None
+    active_name = active.name if active is not None else ""
+    if active_name and getattr(settings, "active_uv_map", None) != active_name:
+        # Keep the panel display synchronized with Blender while preserving the
+        # UV map that was actually active when the operator started.
+        try:
+            settings.active_uv_map = active_name
+        except Exception:
+            pass
     return None
 
 
@@ -498,23 +513,55 @@ def _uv_context_override(context):
     return override
 
 
-def run_uv_pack(context, margin, rotate=True, scale=True):
+def run_uv_pack(
+    context,
+    margin,
+    rotate=True,
+    scale=True,
+    *,
+    pin=False,
+    pin_method="LOCKED",
+    shape_method="CONCAVE",
+):
     override = _uv_context_override(context)
     with context.temp_override(**override):
+        # Blender 5.2 disables packing rotation with the separate rotate flag.
+        # disabled with the separate ``rotate=False`` flag; rotate_method must
+        # always be one of Blender's real enum values when supplied.
+        kwargs = {
+            "rotate": bool(rotate),
+            "scale": scale,
+            "margin": margin,
+            "pin": pin,
+            "pin_method": pin_method,
+        }
+        if rotate:
+            kwargs["rotate_method"] = "ANY"
+
         try:
             bpy.ops.uv.pack_islands(
-                rotate_method="ANY" if rotate else "NONE",
-                scale=scale,
-                margin=margin,
+                **kwargs,
+                shape_method=shape_method,
             )
             return
         except TypeError:
-            if not scale:
-                raise
+            # Older Blender builds may lack shape_method but still support
+            # pinned-island locking. Never silently drop pin semantics when
+            # Pack Selected relies on fixed blockers.
             try:
-                bpy.ops.uv.pack_islands(rotate=rotate, margin=margin)
+                bpy.ops.uv.pack_islands(**kwargs)
+                return
             except TypeError:
-                bpy.ops.uv.pack_islands(margin=margin)
+                if pin:
+                    raise RuntimeError(
+                        "Pinned-island packing is unavailable with this Blender API call."
+                    )
+                if not scale:
+                    raise
+                try:
+                    bpy.ops.uv.pack_islands(rotate=bool(rotate), margin=margin)
+                except TypeError:
+                    bpy.ops.uv.pack_islands(margin=margin)
 
 
 def run_uv_paste(context):

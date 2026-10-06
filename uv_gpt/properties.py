@@ -87,26 +87,28 @@ class UVGPT_Settings(PropertyGroup):
         default="NONE",
     )
     pack_selected_lock_density: BoolProperty(
-        name="Lock Density",
-        description="Keep selected UV islands at their current scale when using Pack Selected",
-        default=True,
+        name="Deprecated Scale Lock",
+        description="Legacy Pack Selected scale setting kept only for older Blender files",
+        default=False,
+        options={"HIDDEN"},
+    )
+    pack_selected_keep_current_scale_v2: BoolProperty(
+        name="Keep Current Scale",
+        description="Keep the selected UV islands at their current scale instead of scaling them to fill the 0-1 tile",
+        default=False,
     )
     pack_selected_unselected_mode: EnumProperty(
-        name="Unselected UVs",
-        description="Choose how Pack Selected treats UV islands outside the current selection",
-        items=(
-            (
-                "LOCK_UNSELECTED",
-                "Lock Unselected UVs",
-                "Treat unselected islands as fixed blockers and do not overlap them",
-            ),
-            (
-                "IGNORE_UNSELECTED",
-                "Ignore Unselected UVs",
-                "Pack only the selected islands and allow overlap with unselected islands",
-            ),
+        name="Deprecated Unselected Mode",
+        description=(
+            "Legacy setting kept only for older Blender files; Pack Selected now "
+            "always ignores unselected UVs while leaving them untouched"
         ),
-        default="LOCK_UNSELECTED",
+        items=(
+            ("LOCK_UNSELECTED", "Legacy Lock", "Deprecated"),
+            ("IGNORE_UNSELECTED", "Legacy Ignore", "Deprecated"),
+        ),
+        default="IGNORE_UNSELECTED",
+        options={"HIDDEN"},
     )
     pack_preserve_stacks: BoolProperty(
         name="Keep Stack Exact",

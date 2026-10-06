@@ -32,7 +32,12 @@ def _selected_islands(context, uv_only=False):
         obj = uv_utils.get_active_mesh_object(context)
         bm = island_tools.get_active_bmesh(context)
         uv_layer = island_tools.get_active_uv_layer(bm, obj)
-        islands = island_tools.get_selected_uv_islands(bm, uv_layer)
+        islands = island_tools.get_selected_uv_islands_for_context(
+            context,
+            bm,
+            uv_layer,
+            refresh_invalid_sync=True,
+        )
     if not islands:
         raise RuntimeError("Select one or more UV islands.")
     return obj, bm, uv_layer, islands

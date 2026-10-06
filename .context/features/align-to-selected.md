@@ -1,140 +1,110 @@
-# Feature Context — Align To Selected
+# Feature Context — Stack Fast V2 / Pro Exact V2
 
 - Slug: `align-to-selected`
 - Status: `active`
-- Last reviewed: `2026-08-18`
+- Last reviewed: `2026-10-07`
 - Verification state: `partially verified`
-- Primary code/test anchors (project-root-relative, mỗi dòng một `path::symbol`):
-  - `uv_gpt/stack_tools.py::UVGPT_OT_align_to_selected`
-  - `uv_gpt/stack_tools.py::_align_unselected_to_selected`
-  - `uv_gpt/stack_tools.py::_best_align_transform`
-  - `uv_gpt/similarity_matcher.py::match_descriptors`
-  - `uv_gpt/similarity_matcher.py::DescriptorCache`
-  - `uv_gpt/match_scheduler.py::schedule_numeric_batch`
+- Primary code/test anchors (project-root-relative):
+  - `uv_gpt/stack_tools.py::UVGPT_OT_align_similar_pro_fast`
+  - `uv_gpt/stack_tools.py::_fast_v2_start_job`
+  - `uv_gpt/stack_tools.py::UVGPT_OT_align_similar_pro_snap`
+  - `uv_gpt/stack_tools.py::_pro_exact_v2_start_job`
+  - `uv_gpt/fast_v2_core.py::solve_fast`
+  - `uv_gpt/pro_exact_v2_core.py::solve_exact`
+  - `uv_gpt/pro_exact_v2_worker.py::main`
+  - `uv_gpt/topology_correspondence.py::find_correspondence`
+  - `uv_gpt/overlay.py::set_fast_progress`
   - `uv_gpt/ui.py::draw_uv_gpt_panel`
-  - `uv_gpt/properties.py::UVGPT_Settings`
+  - `tests/unit/test_pro_exact_uv_cuts.py::ProExactUVCutsTests`
 - Related capsules: `none`
 
 ## 1. User Outcome / Current Contract
 
-Trong UV Editor, nhóm `Stack` hiển thị `Match Scale`, `Allow Flipping`,
-`Similarity Tolerance`, `Paste Keep Position` và một action `Align To Selected`.
-Người dùng chọn một hoặc nhiều island làm target/reference. Action Align tìm
-island tương tự nhưng chưa chọn, rồi căn chúng chồng lên target phù hợp.
+Panel Stack chỉ hiển thị hai action:
 
-Success means:
+- `Fast`: `uv_gpt.align_similar_pro_fast`; capture primitive snapshot, chạy
+  matching ở external Fast V2 worker và apply atomically khi source object,
+  Edit Mode, topology và actual active UV map còn hợp lệ.
+- `Pro`: `uv_gpt.align_similar_pro_snap`; heavy correspondence chạy trong
+  external Pro Exact V2 worker. Chỉ complete topology/loop-to-loop mapping mới
+  được coi là exact; result event được stream và apply progressive.
 
-- Selected target island(s) không bị transform bởi action Align.
-- Mỗi candidate unselected phù hợp với Border Shape được căn đúng một lần.
-- Nếu có nhiều target selected, candidate dùng target có similarity score thấp nhất
-  trong tolerance.
-- Operator giữ Blender Undo và destructive-ready guard hiện có.
+Pro phải báo rõ target skipped/unproven, worker failure và terminal counts.
+Progress hiển thị percent, elapsed và done/total; done-hold giữ overlay tồn tại
+đủ lâu để completion không biến mất.
+
+Legacy Pro/Fast compatibility classes còn trong ZIP để giữ `.blend`/harness cũ,
+nhưng không phải user-facing panel route và không được dùng làm canonical docs.
 
 ## 2. Current Execution Map
 
-`Stack button` → `UVGPT_OT_align_to_selected` → one main-thread island enumeration
-→ selected islands là reference → `_align_unselected_to_selected` dựng cheap
-boundary/topology metadata một lần → lazy full descriptor/cache chỉ cho candidate
-đã qua gate → ordered cyclic/reverse similarity fit qua AUTO numeric scheduler →
-`_apply_align_transform` chỉ ghi UV của candidate.
-
-Ownership: `ui.py::draw_uv_gpt_panel` dispatches the Stack action;
-`properties.py::UVGPT_Settings` owns its three settings;
-`stack_tools.py::_align_unselected_to_selected` owns scope and apply direction;
-`_best_align_transform` is the BMesh/numeric seam; `similarity_matcher.py` owns
-loops, holes, resampling, fit, gates and diagnostics; `match_scheduler.py` owns
-deterministic numeric scheduling (ProcessPool benchmark-only).
+Panel Pro → snapshot → external worker → UV-cut graph → full correspondence
+→ progressive events → guarded Blender timer apply → held completion.
 
 ## 3. Decision Direction
 
-Similarity dùng numeric ordered boundary descriptors. Candidate đi qua cheap raw
-boundary signature trước, topology/core gate sau đó mới vào cyclic/reverse
-Procrustes/Kabsch-style fit; outer và holes được chấm riêng, không trộn loop.
-Open/ambiguous/degenerate boundary states và outer/hole structure mismatch bị
-loại an toàn; core topology mismatch có penalty fallback trong pure matcher,
-nhưng tolerance operator `0.01` giữ gate hiệu dụng strict.
-`stack_match_scale` và `stack_allow_flipping` giữ nguyên semantics hiện có.
-Với nhiều selected target, transform có score thấp nhất được chọn với face-key
-tie-break deterministic. Descriptor cache chỉ tồn tại trong một operator
-execution và không giữ BMesh references.
+- Split graph edges and corner fans at UV cuts, including slits within one island.
+- Reverse outgoing-edge incidence with face winding before exact verification.
+- Report topology singletons as unmatched; matched masters are not skips.
+- Retry Windows progress replacement briefly; a missed progress tick is advisory.
 
 ## 4. Invariants / Safety
 
-- `selected_keys` loại selected islands khỏi candidate loop; selected UV chỉ đọc làm reference.
-- Chỉ `_apply_align_transform(island, ...)` trên island chưa chọn.
-- `ensure_destructive_ready(context)` chạy trước khi lấy và biến đổi UV; operator giữ `REGISTER`/`UNDO`.
-- `Paste Keep Position` và behavior pack không bị đổi.
+- Fast/Pro operator `execute`/`invoke` user-facing khởi chạy V2 detached route;
+  không gọi `_ProAlignSession` làm primary implementation.
+- Pro không dùng nearest-vertex many-to-one làm exact proof.
+- Correspondence là one-to-one topology loop mapping.
+- Master selection dùng actual UV area theo ZIP route.
+- Candidate không chứng minh được topology bị skip, không snap bừa sang hình khác.
+- Apply chờ đúng source object + Edit Mode + captured active UV map.
+- Source thay đổi trong lúc worker chạy làm result chờ hoặc discard, không ghi
+  nhầm UV.
+- Before every Pro batch, compare whole captured UV/topology with expected state
+  including earlier accepted batches; edits on unrelated source faces also discard.
+- Validate complete write/event coverage before mutation. Fast/Pro/Pack share
+  job admission and launch/cancel locking; deleted/replaced source terminates.
 
 ## 5. Active Work
 
-- Change type: `MATCH-04 release/package handoff` (completed).
-- `stack_tools.py` gọi matcher và scheduler; `__init__.py` load order không cần đổi.
-  AUTO chọn single cho exact fixture vì chỉ có một full fit; không tạo persistent pool.
-  Release metadata là `1.2.6`; package smoke chạy từ ZIP extract, không cài persistent.
+- Change type: `none` after current package acceptance.
+- Undo/redo and other Blender versions remain unverified.
 
 ## 6. Improvement / Optimization Opportunities
 
-| Candidate | Evidence or bottleneck | Metric | Trigger to act |
-|---|---|---|---|
-| Exact 577-island fixture | MATCH-03 median `673.303 ms`, min `642.855 ms`, p95 `720.866 ms`; MATCH-01 median `634.806 ms`; MATCH-02 median `1005.188 ms` | `33.0%` faster than MATCH-02, but `6.1%` slower than MATCH-01 | MATCH-04 may optimize island enumeration/boundary extraction; do not infer scheduler win from this case |
-| AUTO policy | One full fit after pruning; `AUTO → single`, worker count `1` | Scheduler match median about `2.088 ms`; no needless worker spawn | Keep process benchmark-only until a larger safe corpus proves benefit |
+- No broader optimization in this fix; keep exact mapping and explicit rejection.
 
 ## 7. Verification / Known Limits
 
-Automated:
+- `tests/unit/test_pro_snap.py` giữ pure planner coverage.
+- `tests/unit/test_zip_authoritative_runtime.py` kiểm tra manifest/hash, UI IDs,
+  V2 worker routes, progress format và active UV guards.
+- `tests/unit/test_pro_two_modes_ui.py` giữ legacy lifecycle checks khi Blender UI
+  modules khả dụng; nếu không có `blf`, test được skip rõ ràng thay vì báo lỗi
+  product.
+- `tests/blender/accessories_mcp_report.md`: MCP1234 Blender5.2.2 live Fast/Pro
+  scope, map/mode wait-return, source edit/deletion/replacement and cleanup.
+- `tests/unit/test_stack_v2_stability.py`: staged atomic writes, admission,
+  launch/cancel races and progressive global expected-source validation.
 
-- Pure matcher + scheduler unit suite — `verified`, 27 tests (16 matcher, 11 scheduler), including NumPy/Python parity and lifecycle checks.
-- In-memory compile of changed source/harness — `verified`.
-- Blender 5.0 exact fixture — `verified`: 1 warmup + 10 measured; selected UV/selection unchanged, incompatible changes `0`, max RMS `2.7421e-06`, pruning `576 → 1 → 1 → 1`.
-- Synthetic backends — `verified`: 72/72 Python single, NumPy single, NumPy threads and ProcessPool prototype runs completed with acceptance/transform parity; ProcessPool benchmark-only.
-- Phase accounting — `verified`: internal phases plus classified `operator_boundary_overhead`; unexplained overhead `0` in final JSON.
-- Packaged artifact smoke — `verified`: extracted `uv_gpt_v1.2.6.zip` reports version
-  `1.2.6`, registers/unregisters cleanly and passes exact-fixture correctness smoke;
-  the current release keeps the package root and source byte parity. Package smoke timing is
-  `671.906/708.489/728.967 ms` min/median/p95 over 1 warmup + 3 measured;
-  NumPy `1.26.4`, RMS max `2.7421e-06`, selected/selection immutable and
-  incompatible changes `0`.
-- `check-feature-context.ps1 -ProjectRoot . -Strict` — verified pass.
-- `check-ai-project.ps1 -ProjectRoot . -Strict` — verified pass.
+### Numeric risk
 
-Manual:
+Accessories fixture accounts for all149 islands: 88 followers,32 masters and29
+unmatched topology singletons; all88 targets apply with error0.0 in Blender.
+Fast matches75 approximate followers. This is fixture-specific evidence;
+it does not certify global topology coverage or general Undo/redo.
 
-- [ ] Trong Blender UI, chọn target/candidate giống border shape; xác nhận candidate chồng lên target còn target giữ nguyên.
-- [ ] Chọn nhiều target; xác nhận mỗi candidate dùng target score tốt nhất.
-- [ ] Xác nhận candidate không phù hợp tolerance không bị di chuyển.
-- [ ] Xác nhận Undo, `Paste Keep Position`, reload/register và lỗi empty selection.
+New evidence, 2026-09-15: six focused regressions in
+`tests/unit/test_pro_exact_uv_cuts.py` pass. MCP on Blender 5.2.1 LTS,
+Bottom/UVMap disposable copy: 549 islands, 470 targets applied, 68 masters,
+11 topology singletons; 79,945 written loops have result-to-Blender error 0.0.
+Original UVs unchanged, worker exited and temp directory removed. This proves
+this Pro fixture, not global Pack/Stack tolerance or general Undo/redo.
+See `tests/blender/bottom_pro_mcp_evidence.md`.
 
-Known limits / Not Implemented:
+## 8. Recent Updates
 
-- Exact fixture live-test dùng in-memory deterministic selection; saved selection
-  trong fixture rỗng.
-- UI context, Undo, multi-target, no-match, flipping trên real fixture và toàn bộ hole/open/degenerate corpus chưa được Blender harness cover; synthetic unit suite đã cover geometry tương ứng.
-- Forward-version warning của fixture (`502.44` mở bằng Blender `5.0.0`) và
-  ambient Blender memory warning vẫn xuất hiện; fixture không được save.
-- MATCH-03 không đạt MATCH-01 median target: bottleneck là island enumeration/boundary extraction/cheap signatures, không phải scheduling. Không claim “beautiful” từ score; geometry evidence nằm trong JSON.
-
-Last evidence:
-
-- `2026-08-18` — MATCH-04 version/package smoke, exact fixture read-only
-  preservation, ZIP hash/structure and validators verified; package manual install
-  and UI/Undo/general corpus remain partial.
-
-## 8. Recent Updates — Max 2
-
-### 2026-08-18 — Update 1
-
-- Reason: MATCH-02 thay Border Shape point-cloud bằng ordered loop/hole-aware matcher.
-- Code-level change: `similarity_matcher.py`; staged raw/topology gates, bounded resampling, cyclic/reverse Procrustes, reflection/scale flags, per-run cache and diagnostics.
-- Automated validation: 16 matcher tests, NumPy/Python parity, exact Blender correctness case; target/selection immutable, RMS max `2.7421e-06`.
-- Live verification: deterministic in-memory case verified; UI/Undo and broader corpus pending.
-
-### 2026-08-18 — Update 2
-
-- Reason: MATCH-03 reduced eager full-descriptor work and added safe adaptive numeric scheduling.
-- Code-level change: one island enumeration, cheap raw/topology metadata, lazy two-descriptor build, deterministic AUTO scheduler, phase split and benchmark-only ProcessPool.
-- Automated validation: 27 unit tests; exact Blender 1+10; synthetic 72/72 parity; fixture/source/harness hashes unchanged and no cache. Median `673.303 ms` beats MATCH-02 but remains above MATCH-01, so claims stay limited.
-
-## Maintenance
-
-Capsule dưới 150 dòng, source anchors relative và registry trong `.context/INDEX.md`
-đồng bộ. Khi có Blender evidence mới, cập nhật canonical verification state.
+- Update 1 — 2026-09-15: fixed UV-cut graph and reversed face winding;
+  singleton reporting, Windows progress sharing recovery, and fresh BMesh
+  acquisition on the tick after undo push; later included in packaged delivery.
+- Update 2 — 2026-10-07: full source guard before each batch, shared worker
+  admission, source identity/cleanup and context-aware Paste selection.
