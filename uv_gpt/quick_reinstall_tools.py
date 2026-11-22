@@ -11,7 +11,7 @@ import bpy
 
 ADDON_MODULE = "uv_gpt"
 DEFAULT_CANONICAL_ZIP_PATH = Path(
-    r"E:\OneDrive\all add on blender\codex\uv_gpt_dropdown_density_lock\uv_gpt_v1.2.6.zip"
+    r"E:\OneDrive\all add on blender\codex\uv_gpt_dropdown_density_lock\uv_gpt_v1.2.7.zip"
 )
 CANONICAL_ZIP_PATH = os.environ.get(
     "UV_GPT_ADDON_ZIP",

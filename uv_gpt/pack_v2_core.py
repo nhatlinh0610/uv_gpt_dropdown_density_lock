@@ -918,6 +918,33 @@ def _variant_signature(variant: _UnitVariant):
     return (round(variant.width, 3), round(variant.height, 3), tuple(pts[:20]))
 
 
+def _min_square_span_candidates(pts_for_box, max_dim0):
+    """Return 4 cardinal rotations of min-square-span angle and whether it beats axis max_dim."""
+    if not pts_for_box:
+        return (), False
+    sq_ang = pack_geometry.min_square_span_angle(pts_for_box) % (2.0 * math.pi)
+    cs, sn = math.cos(sq_ang), math.sin(sq_ang)
+    rxs = [cs * p[0] - sn * p[1] for p in pts_for_box]
+    rys = [sn * p[0] + cs * p[1] for p in pts_for_box]
+    sq_span = max(max(rxs) - min(rxs), max(rys) - min(rys))
+    sq_cands = (
+        sq_ang,
+        (sq_ang + math.pi * 0.5) % (2.0 * math.pi),
+        (sq_ang + math.pi) % (2.0 * math.pi),
+        (sq_ang + math.pi * 1.5) % (2.0 * math.pi),
+    )
+    sq_improves = max_dim0 > 0.0 and sq_span < 0.985 * max_dim0
+    return sq_cands, sq_improves
+
+
+def _append_unique_angles(raw_angles, candidates, tol, cap=None):
+    for cand in candidates:
+        if all(min(abs(cand - a), 2.0 * math.pi - abs(cand - a)) > tol for a in raw_angles):
+            raw_angles.append(cand)
+            if cap is not None and len(raw_angles) >= cap:
+                break
+
+
 def _prepare_unit(unit: PackUnit, rotation_mode="NONE", density_scale=1.0):
     all_uv_pts = list(unit.representative.loop_uvs.values())
     all_hull_pts = [p for poly in unit.representative.boundary_loops for p in poly]
@@ -995,13 +1022,14 @@ def _prepare_unit(unit: PackUnit, rotation_mode="NONE", density_scale=1.0):
             (min_ang + math.pi) % (2.0 * math.pi),
             (min_ang + math.pi * 1.5) % (2.0 * math.pi),
         )
+        sq_cands, sq_improves = _min_square_span_candidates(pts_for_box, max_dim0 / max(density_scale, 1.0e-12))
         card_cands = (math.pi * 0.5, math.pi, math.pi * 1.5)
-        if unit.solidity > 0.90 and aspect < 1.12 and not has_hole and not min_first:
+        if unit.solidity > 0.90 and aspect < 1.12 and not has_hole and not min_first and not sq_improves:
             order_pool = (math.pi * 0.5,)
             max_variants_cap = 2
         elif max_dim0 < 0.10 and not has_hole:
             order_pool = (min_cands + card_cands) if min_first else (card_cands + min_cands[:2])
-            max_variants_cap = 6
+            max_variants_cap = 10
         else:
             extra_angles = tuple(
                 math.radians(deg) for deg in (45.0, 135.0, 225.0, 315.0, 22.5, 67.5, 112.5, 157.5)
@@ -1009,14 +1037,11 @@ def _prepare_unit(unit: PackUnit, rotation_mode="NONE", density_scale=1.0):
             order_pool = (
                 (min_cands + card_cands) if min_first else (card_cands + min_cands)
             ) + extra_angles
-            max_variants_cap = 14
+            max_variants_cap = 18
         raw_angles = [0.0]
-        for candidate_ang in order_pool:
-            if all(
-                min(abs(candidate_ang - a), 2.0 * math.pi - abs(candidate_ang - a)) > 0.08
-                for a in raw_angles
-            ):
-                raw_angles.append(candidate_ang)
+        if sq_cands:
+            _append_unique_angles(raw_angles, sq_cands, 0.025)
+        _append_unique_angles(raw_angles, order_pool, 0.08)
         angles = raw_angles
     else:
         angles = [0.0]
@@ -3897,23 +3922,22 @@ def _unit_center_and_angles(unit: PackUnit, rotation_mode: str) -> tuple[Point, 
         (min_ang + math.pi) % (2.0 * math.pi),
         (min_ang + math.pi * 1.5) % (2.0 * math.pi),
     )
+    sq_cands, sq_improves = _min_square_span_candidates(pts_for_box, max_dim0)
     card_cands = (math.pi * 0.5, math.pi, math.pi * 1.5)
-    if unit.solidity > 0.90 and aspect < 1.12 and not unit.has_hole and not min_first:
+    if unit.solidity > 0.90 and aspect < 1.12 and not unit.has_hole and not min_first and not sq_improves:
         pool = (math.pi * 0.5,)
         cap = 2
     elif max_dim0 < 0.08 and not unit.has_hole:
         pool = (min_cands + card_cands) if min_first else (card_cands + min_cands[:2] + (math.pi * 0.25,))
-        cap = 8
+        cap = 10
     else:
         grid_24 = tuple(k * math.pi / 12.0 for k in range(24))
         pool = ((min_cands + card_cands) if min_first else (card_cands + min_cands)) + grid_24
-        cap = 24
+        cap = 28
     raw_angles = [0.0]
-    for cand in pool:
-        if all(min(abs(cand - a), 2.0 * math.pi - abs(cand - a)) > 0.06 for a in raw_angles):
-            raw_angles.append(cand)
-            if len(raw_angles) >= cap:
-                break
+    if sq_cands and cap > 2:
+        _append_unique_angles(raw_angles, sq_cands, 0.025, cap=cap)
+    _append_unique_angles(raw_angles, pool, 0.06, cap=cap)
     return center, tuple(raw_angles)
 
 
@@ -3927,9 +3951,11 @@ def _solve_general_native(units, static_shapes, margin: float, scale_to_fit: boo
         if source_layout is not None:
             return 1.0, source_layout
 
+    source_layout = None
     min_scale_hint = 0.0
     if scale_to_fit and len(units) <= 220:
-        if _reuse_source_layout(units, static_shapes, margin) is not None:
+        source_layout = _reuse_source_layout(units, static_shapes, margin)
+        if source_layout is not None:
             min_scale_hint = 1.0
 
     unit_shape_offsets = [0]
@@ -4018,12 +4044,18 @@ def _solve_general_native(units, static_shapes, margin: float, scale_to_fit: boo
         c_out_ty,
         ctypes.byref(c_out_cov),
     )
-    if not ok:
+    def _fallback_source_or_none():
+        if source_layout is not None:
+            _progress(progress_cb, stage="optimizing", percent=93.0, done=1, total=1)
+            return 1.0, source_layout
         return None
 
+    if not ok:
+        return _fallback_source_or_none()
+
     scale = float(c_out_scale.value)
-    if not math.isfinite(scale) or scale <= 0.0:
-        return None
+    if not math.isfinite(scale) or scale <= 0.0 or (source_layout is not None and scale < 1.0 - 1.0e-6):
+        return _fallback_source_or_none()
 
     # Exact verification against Python geometry oracle
     idx = SpatialIndex(44)
@@ -4034,17 +4066,17 @@ def _solve_general_native(units, static_shapes, margin: float, scale_to_fit: boo
     for i, (unit, center, angles) in enumerate(unit_meta_py):
         ai = int(c_out_angle_idx[i])
         if ai < 0 or ai >= len(angles):
-            return None
+            return _fallback_source_or_none()
         win_angle = angles[ai]
         var = _build_unit_variant(unit, win_angle, 1.0, center)
         px = float(c_out_tx[i]) + scale * var.origin_shift[0]
         py = float(c_out_ty[i]) + scale * var.origin_shift[1]
         if _variant_conflicts(var, scale, px, py, idx, margin):
-            return None
+            return _fallback_source_or_none()
         for sh_local in var.member_shapes:
             placed_sh = transform_shape(sh_local, scale=scale, tx=px, ty=py)
             if not _shape_fit_tile(placed_sh, margin):
-                return None
+                return _fallback_source_or_none()
             idx.insert(placed_sh)
         placements[unit.key] = (px, py, var)
 

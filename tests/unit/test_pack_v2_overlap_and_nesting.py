@@ -978,6 +978,56 @@ class PackV2OverlapAndNestingTests(unittest.TestCase):
         self.assertIn("uv_gpt.pack_selected", ui_text)
         self.assertIn("uv_gpt.pack_whole_mesh", ui_text)
 
+    def test_min_square_span_angle_improves_tilted_l_island_free_pack(self):
+        # An L-island tilted by 7.5 deg sits halfway between 15-deg grid steps;
+        # min_area_rect_angle picks ~45 deg (wide diagonal), whereas
+        # min_square_span_angle recovers the -7.5 deg axis-aligned square fit.
+        faces, _, _, _ = _make_l_island_faces(
+            0, 0, 0, True, origin=(0.05, 0.05), arm=0.90, thick=0.14
+        )
+        rad = math.radians(7.5)
+        c, s = math.cos(rad), math.sin(rad)
+        rotated_faces = []
+        for f_idx, sel, hide, loops in faces:
+            r_loops = tuple(
+                (
+                    vi,
+                    ei,
+                    0.5 + c * (u - 0.5) - s * (v - 0.5),
+                    0.5 + s * (u - 0.5) + c * (v - 0.5),
+                )
+                for vi, ei, u, v in loops
+            )
+            rotated_faces.append((f_idx, sel, hide, r_loops))
+        snap = _build_snapshot(
+            rotated_faces,
+            mode="whole",
+            margin=0.003,
+            rotation_mode="FREE",
+            lock_overlapping="EXACT",
+            scale_to_fit=True,
+        )
+        res = pack_v2_core.solve_pack(snap)
+        self.assertGreater(res["scale"], 1.04)
+        out_islands = list(pack_v2_core._parse_islands(_apply_writes_to_snapshot(snap, res)))
+        self.assertTrue(pack_v2_core._shape_fit_tile(out_islands[0].boundary_loops, 0.003 - 1e-6))
+
+    def test_pack_v2_never_regresses_valid_source_layout(self):
+        # Two tight non-overlapping quads inside [0.003, 0.997] must never
+        # regress below scale = 1.0 when scale_to_fit=True.
+        f_a, f_id, v_id, e_id = _make_island_faces(0, 0, 0, True, [_rect(0.004, 0.004, 0.495, 0.996)])
+        f_b, _, _, _ = _make_island_faces(f_id, v_id, e_id, True, [_rect(0.502, 0.004, 0.996, 0.996)])
+        snap = _build_snapshot(
+            f_a + f_b,
+            mode="whole",
+            margin=0.003,
+            rotation_mode="FREE",
+            lock_overlapping="EXACT",
+            scale_to_fit=True,
+        )
+        res = pack_v2_core.solve_pack(snap)
+        self.assertGreaterEqual(res["scale"], 1.0 - 1.0e-6)
+
 
 if __name__ == "__main__":
     unittest.main()

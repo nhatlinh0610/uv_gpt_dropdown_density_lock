@@ -269,6 +269,52 @@ def min_area_rect_angle(points):
     return best_angle
 
 
+def min_square_span_angle(points):
+    """Return rotation angle (radians) minimizing max(width, height) for square tile fit."""
+    hull = convex_hull(points)
+    if len(hull) < 3:
+        return 0.0
+
+    def _span(rad):
+        c = math.cos(rad)
+        s = math.sin(rad)
+        min_x = min_y = float("inf")
+        max_x = max_y = -float("inf")
+        for px, py in hull:
+            rx = c * px - s * py
+            ry = s * px + c * py
+            if rx < min_x:
+                min_x = rx
+            if rx > max_x:
+                max_x = rx
+            if ry < min_y:
+                min_y = ry
+            if ry > max_y:
+                max_y = ry
+        return max(max_x - min_x, max_y - min_y)
+
+    # max(w, h) has exact 90-degree periodicity; sweep 0..89 deg then refine with ternary search.
+    best_rad = 0.0
+    best_span = float("inf")
+    for deg in range(90):
+        rad = math.radians(deg)
+        sp = _span(rad)
+        if sp < best_span:
+            best_span = sp
+            best_rad = rad
+    lo = best_rad - math.radians(1.5)
+    hi = best_rad + math.radians(1.5)
+    for _ in range(16):
+        m1 = lo + (hi - lo) / 3.0
+        m2 = hi - (hi - lo) / 3.0
+        if _span(m1) < _span(m2):
+            hi = m2
+        else:
+            lo = m1
+    return (0.5 * (lo + hi)) % (2.0 * math.pi)
+
+
+
 def _point_on_polygon_boundary(point, poly, tol=1.0e-5):
     if len(poly) < 2:
         return False

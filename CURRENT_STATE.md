@@ -1,5 +1,19 @@
 # Trạng thái hiện tại — uv GPT
 
+## Release v1.2.7 (Min-Square-Span Rotation & Valid-Layout Non-Regression) — 2026-11-23
+
+- **Rollback Baseline**: `v1.2.6` checkpointed at git commit `825ad2ee829c7f8eb3148ef7a8169e426dc1c61c`, tag `v1.2.6-good-baseline` (pushed to `origin/main`).
+- **Root Causes Investigated (`chibi_female_nurse-save.blend`, MCP `9876`)**:
+  - `GEO_Nurse_Dress.003` (35 islands / 26 PackUnits / 9 stack followers; largest island `346` faces, `max_dim = 0.606`) packs to `~75%–76%`.
+  - `GEO_Nurse_Dress.001` (32 islands / 32 PackUnits / 0 stack followers) has one giant un-cut `1,120`-face boomerang island (`38.8%` of total 3D area, `solidity = 0.417`) whose optimal rotation (`172.25°`, `w = 0.9157, h = 0.9371`) caps uniform scale at `1.06077x` (hard theoretical max `64.95%`).
+  - `_unit_center_and_angles` and `_prepare_unit` only tried `min_area_rect_angle` (which chose `45°` diagonal = `1.231` span!) + `15°` grid, missing off-grid `min_square_span_angle` (`172.25°`).
+  - `_solve_general_native` discarded `_reuse_source_layout` and could return `scale < 1.0` when the 0.45s `1.0x` probe missed on tight layouts (`GEO_Nurse_Dress.003` dropped `75.94% -> 72.56%`).
+- **Fixes in `v1.2.7`**:
+  - Added `min_square_span_angle(points)` (`uv_gpt/pack_geometry.py`) and integrated `_min_square_span_candidates` into both native (`_unit_center_and_angles`) and Python fallback (`_prepare_unit`) `FREE` rotation pools (`uv_gpt/pack_v2_core.py`).
+  - Preserved `source_layout` in `_solve_general_native` when native fails, fails verification, or returns `scale < 1.0 - 1e-6`.
+  - Bumped add-on version to `1.2.7` (`uv_gpt/__init__.py`, `uv_gpt/quick_reinstall_tools.py`).
+- **Canonical ZIP `uv_gpt_v1.2.7.zip`**: **`673341` bytes**, SHA256 `B6623CB41FEA888E59C3C2E0104DB794B25B476CBB96BD7DF4626FD9E6919211`, `39` runtime files (`38` Python files + `uv_gpt_pack_native.dll`).
+
 ## Genesis MCP9876 C++20 32-Thread Native DLL release — 2026-11-19
 
 - Exact fixture: `GEO_Genesis_Outfit_Upper.001` (`E:\OneDrive\Super Nigger\human\Genesis-save.blend`, kept unsaved on disk), Blender `5.3.0`, MCP port `9876`, `17,032` faces, `94` connected UV islands -> `50` `ANY`-locked PackUnits (`39` exact stack followers, `5` locked overlap followers).
