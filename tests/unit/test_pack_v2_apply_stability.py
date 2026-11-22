@@ -94,6 +94,49 @@ class ApplyStabilityTests(unittest.TestCase):
             self.assertEqual(p.read_text(),'{"percent":1}')
             self.assertTrue(worker._atomic_json(p,{'percent':3}))
 
+    def test_undo_push_captures_pre_pack_only_when_undo_poll_is_false(self):
+        for poll_state, expected_events in (
+            (False, [('push', 'uv GPT Pre-Pack', [(0.0, 0.0), (0.0, 0.0)]),
+                     ('push', 'uv GPT Pack V2', [(1.0, 1.0), (2.0, 2.0)])]),
+            (True, [('push', 'uv GPT Pack V2', [(1.0, 1.0), (2.0, 2.0)])]),
+        ):
+            loops = [Loop(), Loop()]
+            bm = SimpleNamespace(
+                faces=Seq([SimpleNamespace(loops=loops)]),
+                edges=Seq(),
+                verts=Seq(),
+                loops=SimpleNamespace(layers=SimpleNamespace(uv={'UVMap': 'layer'})),
+            )
+            events = []
+            ed_ops = SimpleNamespace(
+                undo=SimpleNamespace(poll=lambda s=poll_state: s),
+                undo_push=lambda message='': events.append(('push', message, [l.value.uv for l in loops])),
+            )
+            namespace = {
+                'bpy': SimpleNamespace(
+                    data=SimpleNamespace(objects={'test': SimpleNamespace(data=None)}),
+                    ops=SimpleNamespace(ed=ed_ops),
+                ),
+                'bmesh': SimpleNamespace(from_edit_mesh=lambda _: bm, update_edit_mesh=lambda *a, **k: None),
+                'math': math,
+                '_pack_v2_snapshot_unchanged': lambda *_: True,
+            }
+            job = {
+                'object_name': 'test',
+                'uv_map_name': 'UVMap',
+                'result': {'writes': [(0, 0, 1.0, 1.0), (0, 1, 2.0, 2.0)]},
+                'allowed_write_keys': frozenset({(0, 0), (0, 1)}),
+            }
+            state = function('_pack_v2_apply_result', namespace)(job)
+            self.assertEqual(state, 'applied')
+            self.assertEqual(events, expected_events)
+
+            # Invalid write must not push any undo step even when undo.poll() is False
+            events.clear()
+            bad_job = dict(job, result={'writes': [(0, 0, 1.0, 1.0), (1, 0, 2.0, 2.0)]})
+            self.assertEqual(function('_pack_v2_apply_result', namespace)(bad_job), 'invalid')
+            self.assertEqual(events, [])
+
 
 class PackLaunchRecoveryTests(unittest.TestCase):
     def launch(self, codes, result_attempt=None, cancel_attempt=None, cancelled=False):

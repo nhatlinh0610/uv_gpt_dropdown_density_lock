@@ -691,6 +691,71 @@ class UVGPT_OT_apply_td_whole_mesh(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class UVGPT_OT_select_small_uv_by_percent(bpy.types.Operator):
+    bl_idname = "uv_gpt.select_small_uv_by_percent"
+    bl_label = "Select Small UV"
+    bl_description = "Select UV islands whose UV area is at or below the configured % of a 0-1 UV tile"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            obj = uv_utils.get_active_mesh_object(context)
+            bm = island_tools.get_active_bmesh(context)
+            uv_layer = island_tools.get_active_uv_layer(bm, obj)
+            islands = island_tools.get_uv_islands(bm, uv_layer, selected_only=False)
+            settings = context.scene.uv_gpt_settings
+            threshold_pct = max(0.0, float(getattr(settings, "small_uv_percent", 0.5)))
+            threshold_area = threshold_pct / 100.0
+
+            matched_islands = []
+            matched_faces = []
+            for island in islands:
+                if island_tools.get_island_area(island, uv_layer) <= threshold_area:
+                    matched_islands.append(island)
+                    matched_faces.extend(island_tools.island_faces(island))
+
+            for v in bm.verts:
+                v.select_set(False)
+            for e in bm.edges:
+                e.select_set(False)
+            for f in bm.faces:
+                f.select_set(False)
+
+            tool_settings = context.tool_settings
+            if getattr(tool_settings, "use_uv_select_sync", False):
+                # Switch to Face select mode so shared seam vertices do not highlight
+                # boundary edges/verts of adjacent unselected large UV islands.
+                tool_settings.mesh_select_mode = (False, False, True)
+                bm.select_mode = {"FACE"}
+                for f in matched_faces:
+                    f.select_set(True)
+                bm.select_flush_mode()
+            else:
+                for f in bm.faces:
+                    f.select_set(True)
+                bm.select_flush(True)
+                for f in bm.faces:
+                    for l in f.loops:
+                        for attr in ("uv_select_vert", "uv_select_edge", "uv_select_face"):
+                            if hasattr(l, attr):
+                                setattr(l, attr, False)
+                for f in matched_faces:
+                    for l in f.loops:
+                        for attr in ("uv_select_vert", "uv_select_edge", "uv_select_face"):
+                            if hasattr(l, attr):
+                                setattr(l, attr, True)
+
+            bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+        except RuntimeError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            f"Selected {len(matched_islands)}/{len(islands)} UV island(s) <= {threshold_pct:.3f}% ({len(matched_faces)} faces).",
+        )
+        return {"FINISHED"}
+
+
 classes = (
     UVGPT_OT_show_selected_td,
     UVGPT_OT_show_all_td,
@@ -700,6 +765,7 @@ classes = (
     UVGPT_OT_square_face_apply_td_whole_mesh,
     UVGPT_OT_apply_td_selected,
     UVGPT_OT_apply_td_whole_mesh,
+    UVGPT_OT_select_small_uv_by_percent,
 )
 
 

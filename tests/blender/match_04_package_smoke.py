@@ -1,8 +1,11 @@
-"""MATCH-04 smoke test for the extracted release ZIP.
+"""MATCH-04 legacy backend smoke for the extracted release ZIP.
 
-The add-on is imported only from ``--package-root``.  Workspace test helpers
-are used for deterministic fixture setup and measurement, but the operator and
-all add-on modules come from the extracted package copy.
+The add-on is imported only from ``--package-root``. Workspace test helpers are
+used for deterministic fixture setup and measurement, but the operator and all
+add-on modules come from the extracted package copy. This historical harness
+exercises the retained compatibility operator; the user-facing Fast V2 and
+Pro Exact V2 detached routes have separate static contracts and require a Z3
+Blender smoke before they can be claimed live-verified.
 """
 
 from __future__ import annotations
@@ -136,8 +139,8 @@ def _package_files():
     ]
     if unexpected:
         raise SmokeError(f"Package contains cache files: {unexpected}")
-    if len(files) != 14:
-        raise SmokeError(f"Expected 14 package Python files, found {len(files)}")
+    if len(files) != 38:
+        raise SmokeError(f"Expected 38 package Python files, found {len(files)}")
     return files
 
 

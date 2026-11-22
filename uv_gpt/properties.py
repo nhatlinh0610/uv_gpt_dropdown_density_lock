@@ -79,12 +79,21 @@ class UVGPT_Settings(PropertyGroup):
     rotation_mode: EnumProperty(
         name="Rotation Mode",
         items=(
-            ("NONE", "None", ""),
-            ("ROT_90", "90 deg", ""),
-            ("ROT_180", "180 deg", ""),
-            ("CARDINAL", "Cardinal 90 deg Steps", ""),
+            ("NONE", "None", "Keep current UV island orientations"),
+            ("ROT_90", "90 deg", "Rotate movable islands by +90 deg before packing"),
+            ("ROT_180", "180 deg", "Rotate movable islands by +180 deg before packing"),
+            (
+                "CARDINAL",
+                "Cardinal (Best 90°)",
+                "Automatically try 0°/90°/180°/270° per island to pack tightly while staying axis-aligned",
+            ),
+            (
+                "FREE",
+                "Any (Best Fit)",
+                "Try multi-angle and minimum-bounding-box orientations per island for maximum UV fill",
+            ),
         ),
-        default="NONE",
+        default="CARDINAL",
     )
     pack_selected_lock_density: BoolProperty(
         name="Deprecated Scale Lock",
@@ -114,6 +123,31 @@ class UVGPT_Settings(PropertyGroup):
         name="Keep Stack Exact",
         description="Pack one representative from exact-overlapped selected stacks, then restore stack followers exactly",
         default=True,
+    )
+    pack_lock_overlapping: EnumProperty(
+        name="Lock Overlapping",
+        description=(
+            "Keep overlapping UV islands locked together during Pack "
+            "(Any Overlapping preserves both exact stacks and heterogeneous/partial overlaps)"
+        ),
+        items=(
+            (
+                "ANY",
+                "Any Overlapping",
+                "Lock exact stacks and any 2D-overlapping movable islands together as rigid units",
+            ),
+            (
+                "EXACT",
+                "Exact Stack Only",
+                "Lock only identical-topology coincident stacks",
+            ),
+            (
+                "OFF",
+                "Off",
+                "Unpack all movable islands separately",
+            ),
+        ),
+        default="ANY",
     )
     pack_selected_only_move_selected: BoolProperty(
         name="Deprecated Only Move Selected",
@@ -230,6 +264,15 @@ class UVGPT_Settings(PropertyGroup):
     ui_show_symmetry: BoolProperty(name="Symmetry", default=False)
     ui_show_stack: BoolProperty(name="Stack", default=False)
     ui_show_overlay: BoolProperty(name="Overlay", default=False)
+    small_uv_percent: FloatProperty(
+        name="Small UV %",
+        description="Select UV islands whose UV area is at or below this percentage of a 0-1 UV tile",
+        default=0.5,
+        min=0.001,
+        max=100.0,
+        precision=3,
+        subtype="PERCENTAGE",
+    )
 
 
 classes = (

@@ -106,22 +106,24 @@ def segments_intersect(a, b, c, d):
 
 
 def point_in_polygon(point, poly):
-    if len(poly) < 3:
+    n = len(poly)
+    if n < 3:
         return False
     inside = False
     x, y = point
-    j = len(poly) - 1
-    for i in range(len(poly)):
-        xi, yi = poly[i]
-        xj, yj = poly[j]
-        if _on_segment(poly[j], poly[i], point):
+    eps = _EPS
+    xj, yj = poly[n - 1]
+    for xi, yi in poly:
+        if (
+            (xi if xi < xj else xj) - eps <= x <= (xj if xi < xj else xi) + eps
+            and (yi if yi < yj else yj) - eps <= y <= (yj if yi < yj else yi) + eps
+            and abs((xi - xj) * (y - yj) - (yi - yj) * (x - xj)) <= eps
+        ):
             return True
-        crosses = ((yi > y) != (yj > y))
-        if crosses:
-            x_hit = (xj - xi) * (y - yi) / (yj - yi) + xi
-            if x < x_hit:
+        if (yi > y) != (yj > y):
+            if x < (xj - xi) * (y - yi) / (yj - yi) + xi:
                 inside = not inside
-        j = i
+        xj, yj = xi, yi
     return inside
 
 
@@ -202,4 +204,232 @@ def polygon_sets_conflict(left_set, right_set, margin=0.0):
         for right in right_set:
             if polygons_conflict(left, right, margin=margin):
                 return True
+    return False
+
+
+def convex_hull(points):
+    """Return 2D convex hull vertices in CCW order using Andrew's monotone chain."""
+    unique = sorted({(float(p[0]), float(p[1])) for p in points})
+    if len(unique) <= 2:
+        return tuple(unique)
+
+    lower = []
+    for p in unique:
+        while len(lower) >= 2 and _orient(lower[-2], lower[-1], p) <= _EPS:
+            lower.pop()
+        lower.append(p)
+
+    upper = []
+    for p in reversed(unique):
+        while len(upper) >= 2 and _orient(upper[-2], upper[-1], p) <= _EPS:
+            upper.pop()
+        upper.append(p)
+
+    return tuple(lower[:-1] + upper[:-1])
+
+
+def min_area_rect_angle(points):
+    """Return rotation angle (radians) aligning points to their min-area AABB."""
+    hull = convex_hull(points)
+    if len(hull) < 3:
+        return 0.0
+    best_area = float("inf")
+    best_angle = 0.0
+    n = len(hull)
+    for i in range(n):
+        a = hull[i]
+        b = hull[(i + 1) % n]
+        dx = b[0] - a[0]
+        dy = b[1] - a[1]
+        if math.hypot(dx, dy) <= _EPS:
+            continue
+        angle = -math.atan2(dy, dx)
+        c = math.cos(angle)
+        s = math.sin(angle)
+        min_x = min_y = float("inf")
+        max_x = max_y = -float("inf")
+        for px, py in hull:
+            rx = c * px - s * py
+            ry = s * px + c * py
+            if rx < min_x:
+                min_x = rx
+            if rx > max_x:
+                max_x = rx
+            if ry < min_y:
+                min_y = ry
+            if ry > max_y:
+                max_y = ry
+        w = max_x - min_x
+        h = max_y - min_y
+        area = w * h
+        if area < best_area - 1.0e-12:
+            best_area = area
+            # Prefer wider-than-tall horizontal canonical alignment.
+            best_angle = angle + (math.pi * 0.5 if h > w else 0.0)
+    return best_angle
+
+
+def _point_on_polygon_boundary(point, poly, tol=1.0e-5):
+    if len(poly) < 2:
+        return False
+    for i in range(len(poly)):
+        a = poly[i]
+        b = poly[(i + 1) % len(poly)]
+        if _point_segment_distance(point, a, b) <= tol:
+            return True
+    return False
+
+
+def _point_in_shape_strict(point, shape, boundary_tol=1.0e-5):
+    for poly in shape:
+        if _point_on_polygon_boundary(point, poly, tol=boundary_tol):
+            return False
+    inside = False
+    for poly in shape:
+        if point_in_polygon(point, poly):
+            inside = not inside
+    return inside
+
+
+def _interior_probe_points(shape):
+    probes = []
+    for poly in shape:
+        if len(poly) < 3:
+            continue
+        cx = sum(p[0] for p in poly) / len(poly)
+        cy = sum(p[1] for p in poly) / len(poly)
+        if _point_in_shape_strict((cx, cy), shape):
+            probes.append((cx, cy))
+        # Inward normal probes from polygon edges handle non-convex C/U crescents
+        # as well as narrow ribbons where large length-fractions overshoot.
+        edge_items = []
+        for i in range(len(poly)):
+            a = poly[i]
+            b = poly[(i + 1) % len(poly)]
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            if length > 1.0e-7:
+                edge_items.append((length, a, b))
+        edge_items.sort(reverse=True)
+        for length, a, b in edge_items[:10]:
+            mx = (a[0] + b[0]) * 0.5
+            my = (a[1] + b[1]) * 0.5
+            nx = -(b[1] - a[1]) / length
+            ny = (b[0] - a[0]) / length
+            found = False
+            steps = [length * f for f in (0.01, 0.002, 0.05, 0.0004, 0.0001)] + [2.0e-5]
+            for step in steps:
+                if step <= 1.1e-5:
+                    continue
+                for sign in (1.0, -1.0):
+                    cand = (mx + nx * step * sign, my + ny * step * sign)
+                    if _point_in_shape_strict(cand, shape):
+                        probes.append(cand)
+                        found = True
+                        break
+                if found:
+                    break
+            if len(probes) >= 10:
+                break
+    return tuple(probes)
+
+
+def _sample_boundary_points_for_overlap(shape, target_bounds=None, max_pts=192):
+    pts = []
+    if target_bounds is not None:
+        minx, maxx, miny, maxy = target_bounds
+        for poly in shape:
+            n = len(poly)
+            if n < 3:
+                continue
+            for i in range(n):
+                a = poly[i]
+                if minx <= a[0] <= maxx and miny <= a[1] <= maxy:
+                    pts.append(a)
+                b = poly[(i + 1) % n]
+                mx = (a[0] + b[0]) * 0.5
+                my = (a[1] + b[1]) * 0.5
+                if minx <= mx <= maxx and miny <= my <= maxy:
+                    pts.append((mx, my))
+                if len(pts) >= max_pts:
+                    return tuple(pts)
+        if pts:
+            return tuple(pts)
+    for poly in shape:
+        n = len(poly)
+        if n < 3:
+            continue
+        step = max(1, n // max(1, max_pts // 2))
+        for i in range(0, n, step):
+            a = poly[i]
+            b = poly[(i + 1) % n]
+            pts.append(a)
+            pts.append(((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5))
+            if len(pts) >= max_pts:
+                return tuple(pts)
+    return tuple(pts)
+
+
+def shapes_strictly_overlap(left, right):
+    """True when two 2D polygon sets share positive overlapping area or cross strictly.
+
+    Two non-overlapping shapes merely touching flush at a shared boundary (gap=0)
+    return False so adjacent non-stacked islands are not falsely locked together.
+    """
+    if not left or not right:
+        return False
+    lpts = [p for poly in left for p in poly]
+    rpts = [p for poly in right for p in poly]
+    if not lpts or not rpts:
+        return False
+    lb = polygon_bounds(lpts)
+    rb = polygon_bounds(rpts)
+    if (
+        min(lb[1], rb[1]) <= max(lb[0], rb[0]) + 1.0e-5
+        or min(lb[3], rb[3]) <= max(lb[2], rb[2]) + 1.0e-5
+    ):
+        return False
+
+    for lp in left:
+        for rp in right:
+            le = list(zip(lp, lp[1:] + lp[:1]))
+            re = list(zip(rp, rp[1:] + rp[:1]))
+            for a, b in le:
+                minax = min(a[0], b[0])
+                maxax = max(a[0], b[0])
+                minay = min(a[1], b[1])
+                maxay = max(a[1], b[1])
+                for c, d in re:
+                    if (
+                        maxax <= min(c[0], d[0]) + 1.0e-5
+                        or max(c[0], d[0]) <= minax + 1.0e-5
+                        or maxay <= min(c[1], d[1]) + 1.0e-5
+                        or max(c[1], d[1]) <= minay + 1.0e-5
+                    ):
+                        continue
+                    o1 = _orient(a, b, c)
+                    o2 = _orient(a, b, d)
+                    o3 = _orient(c, d, a)
+                    o4 = _orient(c, d, b)
+                    if (o1 * o2 < 0.0) and (o3 * o4 < 0.0):
+                        # Require strict non-grazing crossing beyond float32 boundary noise.
+                        len_ab = math.hypot(b[0] - a[0], b[1] - a[1])
+                        len_cd = math.hypot(d[0] - c[0], d[1] - c[1])
+                        if (
+                            min(abs(o1), abs(o2)) > 1.0e-5 * len_ab
+                            and min(abs(o3), abs(o4)) > 1.0e-5 * len_cd
+                        ):
+                            return True
+
+    for probe in _interior_probe_points(left):
+        if _point_in_shape_strict(probe, right):
+            return True
+    for probe in _interior_probe_points(right):
+        if _point_in_shape_strict(probe, left):
+            return True
+    for pt in _sample_boundary_points_for_overlap(left, target_bounds=rb):
+        if _point_in_shape_strict(pt, right):
+            return True
+    for pt in _sample_boundary_points_for_overlap(right, target_bounds=lb):
+        if _point_in_shape_strict(pt, left):
+            return True
     return False

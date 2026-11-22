@@ -120,6 +120,7 @@ def package_metadata(uv_gpt):
         "version": list(uv_gpt.bl_info.get("version", ())),
         "operator_ids": [
             stack_tools.UVGPT_OT_align_to_selected.bl_idname,
+            stack_tools.UVGPT_OT_align_similar_pro_snap.bl_idname,
             stack_tools.UVGPT_OT_align_similar_pro_fast.bl_idname,
             stack_tools.UVGPT_OT_align_similar_pro_exact.bl_idname,
         ],

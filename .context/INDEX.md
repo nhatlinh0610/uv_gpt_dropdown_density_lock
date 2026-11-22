@@ -4,7 +4,7 @@
 
 | Workflow | Primary anchors | Capsule |
 |---|---|---|
-| Pack V2 Selected / Whole / Symmetry | `uv_gpt/pack_tools.py`, `uv_gpt/pack_v2_core.py`, `uv_gpt/pack_v2_worker.py`, `uv_gpt/pack_geometry.py` | pack-center-selection-scope |
+| Pack V2 Selected / Whole (C++20 32-Thread DLL + Python Fallback) | `uv_gpt/pack_tools.py`, `uv_gpt/pack_v2_core.py`, `uv_gpt/uv_gpt_pack_native.dll`, `native/pack_native.cpp`, `uv_gpt/pack_v2_worker.py`, `uv_gpt/pack_geometry.py` | pack-center-selection-scope |
 | Stack Fast V2 / Pro Exact V2 | `uv_gpt/stack_tools.py`, `uv_gpt/fast_v2_core.py`, `uv_gpt/fast_v2_worker.py`, `uv_gpt/pro_exact_v2_core.py`, `uv_gpt/pro_exact_v2_worker.py`, `uv_gpt/topology_correspondence.py` | align-to-selected |
 | Mirror Symmetry | `uv_gpt/symmetry_pair.py`, `uv_gpt/island_tools.py` | symmetry-center-pair |
 | Density | `uv_gpt/texel_density.py`, `uv_gpt/tdensity_presets.py` | density-reference-selection |
@@ -30,6 +30,6 @@
   compatibility harnesses; kết quả harness cũ không được nâng thành V2 proof.
 - `AI_ERROR_LOG.md` là lịch sử regression; nội dung cũ có thể mô tả behavior cũ
   và không phải contract hiện tại.
-- Canonical ZIP là `uv_gpt_v1.2.6.zip`, manifest 38 runtime Python files.
+- Canonical ZIP là `uv_gpt_v1.2.6.zip`, manifest 39 runtime files (`38` Python files + `uv_gpt_pack_native.dll`).
   SHA/size và evidence hiện tại nằm ở đầu `CURRENT_STATE.md`; lịch sử cũ không
   thay thế việc kiểm tra source/ZIP/installed byte parity của bản mới.

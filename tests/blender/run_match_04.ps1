@@ -45,13 +45,13 @@ try {
 } finally {
     $zip.Dispose()
 }
-if ($entries.Count -ne 14 -or @($entries | Where-Object { $_ -notmatch '^uv_gpt/[^/]+\.py$' }).Count -ne 0) {
-    throw "ZIP structure is not exactly one uv_gpt root with 14 Python files"
+if ($entries.Count -ne 38 -or @($entries | Where-Object { $_ -notmatch '^uv_gpt/[^/]+\.py$' }).Count -ne 0) {
+    throw "ZIP structure is not exactly one uv_gpt root with 38 Python files"
 }
 
 $sourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'uv_gpt') -Filter '*.py' -File | Sort-Object Name)
-if ($sourceFiles.Count -ne 14) {
-    throw "Expected 14 source Python files, found $($sourceFiles.Count)"
+if ($sourceFiles.Count -ne 38) {
+    throw "Expected 38 source Python files, found $($sourceFiles.Count)"
 }
 
 $extractParent = Join-Path $ProjectRoot '.test_runtime'

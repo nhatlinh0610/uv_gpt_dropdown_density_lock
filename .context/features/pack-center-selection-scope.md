@@ -2,8 +2,8 @@
 
 - Slug: `pack-center-selection-scope`
 - Status: `active`
-- Last reviewed: `2026-10-07`
-- Verification state: `partially verified`
+- Last reviewed: `2026-11-19`
+- Verification state: `verified (115 unit tests + Live Blender 5.2 MCP 1234 & Blender 5.3 MCP 9876)`
 - Primary code/test anchors (project-root-relative):
   - `uv_gpt/pack_tools.py::UVGPT_OT_pack_selected`
   - `uv_gpt/pack_tools.py::UVGPT_OT_pack_whole_mesh`
@@ -11,6 +11,8 @@
   - `uv_gpt/pack_tools.py::_pack_v2_capture_snapshot`
   - `uv_gpt/pack_tools.py::_pack_v2_start_job`
   - `uv_gpt/pack_v2_core.py::solve_pack`
+  - `uv_gpt/pack_v2_core.py::_solve_general_native`
+  - `uv_gpt/uv_gpt_pack_native.dll` (`native/pack_native.cpp::uvgpt_pack_solve`)
   - `uv_gpt/pack_v2_worker.py::main`
   - `uv_gpt/pack_geometry.py::polygons_conflict`
   - `uv_gpt/island_tools.py::get_selected_uv_islands_for_context`
@@ -107,6 +109,7 @@ Operator → primitive snapshot → external worker → complete result → sour
 
 ## 8. Recent Updates
 
+- 2026-11-19: C++20 32-thread native DLL packing engine (`native/pack_native.cpp` -> `uv_gpt/uv_gpt_pack_native.dll`, zero MinGW runtime DLL dependencies) integrated into `uv_gpt/pack_v2_core.py::_solve_general_native` with 100% Python exact collision oracle verification and automatic Python V3 fallback; extracted horizontal/vertical concave bays (`extract_bay_holes`), V-notch valley descent (`compact_dir`), L2-resident `WorkerWorkspace`, and 32-thread Span-Shrink + Target-Scale Climb LNS (`74.63%–75.14%` true face coverage in `~4.3s` on `GEO_Genesis_Outfit_Upper.001` in live Blender 5.3 MCP 9876, `0` O(N²) margin conflicts, working `Ctrl+Z` Undo/Redo); removed `Pack Symmetry [U][V]` and `Center Selected` from `uv_gpt/ui.py` Pack panel.
 - 2026-10-07: exact mirrored pair UVs, all88 known stack followers, bounded
   symmetry layout, full margin, complete UV boundary/corner bounds, scale1
   valid-layout reuse and owner-thread lifecycle validation.

@@ -33,8 +33,8 @@ $PackageShaBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $Package).Hash.
 $OldPackageShaBefore = if ($OldPackagePresent) { (Get-FileHash -Algorithm SHA256 -LiteralPath $OldPackage).Hash.ToUpperInvariant() } else { $null }
 
 $sourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'uv_gpt') -Filter '*.py' -File | Sort-Object Name)
-if ($sourceFiles.Count -ne 16) {
-    throw "Expected 16 current source Python files, found $($sourceFiles.Count)"
+if ($sourceFiles.Count -ne 38) {
+    throw "Expected 38 current source Python files, found $($sourceFiles.Count)"
 }
 
 $zip = [System.IO.Compression.ZipFile]::OpenRead($Package)
@@ -44,8 +44,8 @@ try {
     $zip.Dispose()
 }
 $expectedEntries = @($sourceFiles | ForEach-Object { 'uv_gpt/' + $_.Name })
-if ($entries.Count -ne 16 -or (Compare-Object -ReferenceObject $expectedEntries -DifferenceObject $entries)) {
-    throw "ZIP root/entry set is not exactly the current 16-file uv_gpt package"
+if ($entries.Count -ne 38 -or (Compare-Object -ReferenceObject $expectedEntries -DifferenceObject $entries)) {
+    throw "ZIP root/entry set is not exactly the current 38-file uv_gpt package"
 }
 if (@($entries | Where-Object { $_ -notmatch '^uv_gpt/[^/]+\.py$' }).Count -ne 0) {
     throw 'ZIP contains an unexpected path'
@@ -72,8 +72,18 @@ foreach ($source in $sourceFiles) {
     }
 }
 $extractedFiles = @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File)
-if ($extractedFiles.Count -ne 16 -or @($extractedFiles | Where-Object { $_.Extension -ne '.py' }).Count -ne 0) {
+if ($extractedFiles.Count -ne 38 -or @($extractedFiles | Where-Object { $_.Extension -ne '.py' }).Count -ne 0) {
     throw 'Extracted package contains unexpected files or cache artifacts'
+}
+
+foreach ($v2File in @(
+    'fast_v2_core.py', 'fast_v2_worker.py',
+    'pack_geometry.py', 'pack_v2_core.py', 'pack_v2_worker.py',
+    'pro_exact_v2_core.py', 'pro_exact_v2_worker.py'
+)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot $v2File) -PathType Leaf)) {
+        throw "Extracted ZIP is missing V2 runtime file: $v2File"
+    }
 }
 
 function Assert-NoPortableBlender {
@@ -135,8 +145,9 @@ foreach ($evidence in @($CcEvidence, $DedicatedEvidence)) {
     $loadedPath = (Resolve-Path -LiteralPath $evidence.package.loaded_from).Path
     if ($loadedPath -ne $expectedInit) { throw "Wrong imported add-on path: $loadedPath" }
     if (($evidence.package.version -join '.') -ne $ExpectedVersion) { throw "Package smoke version mismatch: $($evidence.package.version -join '.')" }
-    if (@($evidence.package.operator_ids) -notcontains 'uv_gpt.align_to_selected') { throw 'Packaged current Align Similar operator is missing' }
-    if (@($evidence.package.operator_ids) -notcontains 'uv_gpt.align_similar_pro_fast') { throw 'Packaged Fast Align Similar Pro operator is missing' }
+    if (@($evidence.package.operator_ids) -notcontains 'uv_gpt.align_to_selected') { throw 'Packaged legacy Align Selected compatibility operator is missing' }
+    if (@($evidence.package.operator_ids) -notcontains 'uv_gpt.align_similar_pro_snap') { throw 'Packaged user-facing Pro snap operator is missing' }
+    if (@($evidence.package.operator_ids) -notcontains 'uv_gpt.align_similar_pro_fast') { throw 'Packaged user-facing Fast V2 operator is missing' }
     if (@($evidence.package.operator_ids) -notcontains 'uv_gpt.align_similar_pro_exact') { throw 'Packaged Exact Align Similar Pro operator is missing' }
     $legacyProId = 'uv_gpt.' + 'align_similar_' + 'pro'
     if (@($evidence.package.operator_ids) -contains $legacyProId) { throw 'Packaged legacy composite Align Similar Pro operator is still present' }
@@ -180,7 +191,7 @@ foreach ($case in $DedicatedEvidence.cases) {
 $summary = [ordered]@{
     status = 'passed'
     packet = 'PRO-02C/package-smoke'
-    package = [ordered]@{ path = $Package; size = (Get-Item -LiteralPath $Package).Length; sha256 = $PackageShaAfter; entry_count = 16; byte_parity = 'passed'; version = $ExpectedVersion; imported_from = (Resolve-Path -LiteralPath (Join-Path $PackageRoot '__init__.py')).Path }
+    package = [ordered]@{ path = $Package; size = (Get-Item -LiteralPath $Package).Length; sha256 = $PackageShaAfter; entry_count = 38; byte_parity = 'passed'; version = $ExpectedVersion; imported_from = (Resolve-Path -LiteralPath (Join-Path $PackageRoot '__init__.py')).Path }
     cc = [ordered]@{ result = $CcResult; fixture_sha_before = $FixtureShaBefore; fixture_sha_after = $FixtureShaAfter; measured_elapsed_ms = @($CcEvidence.measured_elapsed_ms); master = @($ccGroup.master_key); mapping_loop_count = $ccGroup.mapping_pairs[0].Count; safety_deltas_zero = $true }
     dedicated = [ordered]@{ result = $DedicatedResult; fixture_sha_before = $DedicatedShaBefore; fixture_sha_after = $DedicatedShaAfter; cases = $DedicatedEvidence.cases.Count; safety_deltas_zero = $true }
     portable_blender_processes = 0

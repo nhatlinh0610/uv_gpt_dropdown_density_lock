@@ -114,9 +114,8 @@ class UnifiedWorkflowTests(unittest.TestCase):
         self.assertIn("static_shapes", core)
         self.assertIn("shape_sets_conflict", core)
         self.assertIn("symmetry", core)
-        self.assertIn('row.operator("uv_gpt.pack_symmetry", text="Pack Symmetry")', ui)
-        self.assertIn('prop_enum(settings, "symmetry_axis", "U_HALF"', ui)
-        self.assertIn('prop_enum(settings, "symmetry_axis", "V_HALF"', ui)
+        self.assertNotIn("uv_gpt.pack_symmetry", ui)
+        self.assertNotIn("uv_gpt.center_selected", ui)
 
     def test_user_facing_pack_errors_are_info_not_red_error(self):
         pack = source("pack_tools.py")

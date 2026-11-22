@@ -326,7 +326,7 @@ class AlignSimilarProTests(unittest.TestCase):
             before,
         )
 
-    def test_existing_operator_is_unchanged_and_two_pro_operators_are_separate(self):
+    def test_legacy_backends_coexist_with_user_facing_v2_fast_and_pro(self):
         self.assertEqual(
             STACK_TOOLS.UVGPT_OT_align_to_selected.bl_idname,
             "uv_gpt.align_to_selected",
@@ -347,10 +347,18 @@ class AlignSimilarProTests(unittest.TestCase):
             STACK_TOOLS.UVGPT_OT_align_similar_pro_exact,
             STACK_TOOLS.classes,
         )
+        self.assertIn(
+            STACK_TOOLS.UVGPT_OT_align_similar_pro_snap,
+            STACK_TOOLS.classes,
+        )
         ui_source = (PROJECT_ROOT / "uv_gpt" / "ui.py").read_text(encoding="utf-8")
-        self.assertIn('row.operator("uv_gpt.align_to_selected"', ui_source)
-        self.assertIn('uv_gpt.align_similar_pro_fast', ui_source)
-        self.assertIn('uv_gpt.align_similar_pro_exact', ui_source)
+        stack_source = (PROJECT_ROOT / "uv_gpt" / "stack_tools.py").read_text(encoding="utf-8")
+        self.assertIn('row.operator("uv_gpt.align_similar_pro_fast", text="Fast")', ui_source)
+        self.assertIn('row.operator("uv_gpt.align_similar_pro_snap", text="Pro")', ui_source)
+        self.assertNotIn('row.operator("uv_gpt.align_to_selected", text="Fast")', ui_source)
+        self.assertNotIn('row.operator("uv_gpt.align_similar_pro_exact"', ui_source)
+        self.assertIn("_fast_v2_start_job(context)", stack_source)
+        self.assertIn("_pro_exact_v2_start_job(context)", stack_source)
 
     def test_shape_candidate_forwards_existing_controls(self):
         settings = types.SimpleNamespace(

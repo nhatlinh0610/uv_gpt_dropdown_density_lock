@@ -365,7 +365,9 @@ def _face_uv_selected_for_context(context, bm, face, uv_layer):
     face_uv_selected = getattr(face, "uv_select", None)
     if face_uv_selected is not None:
         return bool(face_uv_selected) or any(
-            _uv_loop_edge_selected(loop, uv_layer) for loop in face.loops
+            _uv_loop_edge_selected(loop, uv_layer)
+            or _uv_loop_vertex_selected(loop, uv_layer)
+            for loop in face.loops
         )
     return any(
         _uv_loop_vertex_selected(loop, uv_layer)

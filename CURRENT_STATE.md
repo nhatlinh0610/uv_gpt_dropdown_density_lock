@@ -1,5 +1,18 @@
 # Trạng thái hiện tại — uv GPT
 
+## Genesis MCP9876 C++20 32-Thread Native DLL release — 2026-11-19
+
+- Exact fixture: `GEO_Genesis_Outfit_Upper.001` (`E:\OneDrive\Super Nigger\human\Genesis-save.blend`, kept unsaved on disk), Blender `5.3.0`, MCP port `9876`, `17,032` faces, `94` connected UV islands -> `50` `ANY`-locked PackUnits (`39` exact stack followers, `5` locked overlap followers).
+- Built self-contained C++20 32-thread native packing engine (`native/pack_native.cpp`, `native/build_native.ps1` -> `uv_gpt/uv_gpt_pack_native.dll`, `903,365` bytes, static MinGW-w64 compile importing only `KERNEL32.dll` + Windows UCRT `api-ms-win-crt-*.dll`).
+- Integrated via `ctypes` in `uv_gpt/pack_v2_core.py` (`_load_native_pack_lib`, `_unit_center_and_angles`, `_solve_general_native`) with 100% Python exact polygon collision & tile-fit verification (`_variant_conflicts` & `_shape_fit_tile`) and automatic fallback to Python V3 (`_solve_general`).
+- Optimized `_coincident_uv_labelled_mapping` (`5.032s -> 0.062s`) and skipped redundant 24-variant Python preparation when native DLL is loaded (`0.58s -> 0.05s`).
+- Removed `Pack Symmetry [U][V]` and `Center Selected` from the `Pack` panel UI (`uv_gpt/ui.py`) per user request while keeping backend operators registered for compatibility.
+- Live E2E results on `GEO_Genesis_Outfit_Upper.001` (`margin = 0.003`, `Lock Overlapping = ANY`):
+  - `CARDINAL`: scale `1.0842x – 1.0885x`, true face raster coverage **`73.70% – 74.26%`** in **`4.23s – 4.40s`**, `0` O(N²) margin conflicts, `0` OOB.
+  - `FREE` (`Any (Best Fit)`): scale `1.0877x – 1.0944x`, true face raster coverage **`74.63% – 75.14%` (`~75%`)** in **`4.34s – 4.52s`**, `0` O(N²) margin conflicts, `0` OOB, hollow U-horseshoe & 4 X-frame concave bays nested, `Ctrl+Z` Undo / `Ctrl+Shift+Z` Redo verified (`max_undo_diff = 0.0`, `max_redo_diff = 0.0`).
+- Canonical ZIP `uv_gpt_v1.2.6.zip`: **`672110` bytes**, SHA256 `70a0bbaaaa05b83e423c2573f58b9fd13530899d4092cafb3620fe3e315473ea`, `39` runtime files (`38` Python files + `uv_gpt_pack_native.dll`), `39/39` byte/SHA-256 parity across repo `uv_gpt/`, ZIP, Store Blender `5.2`, and Store Blender `5.3`.
+- Evidence report: `tests/blender/genesis_mcp9876_cpp_pack_v2_report.md` and `tests/blender/genesis_live_cpp_pack_v2_before_after.png`.
+
 ## Accessories MCP1234 release — 2026-10-07
 
 - Exact fixture: GEO_Accessories_Combined, Blender5.2.2 LTS/d13f752e3b9c,
@@ -54,18 +67,18 @@
 - Blender live, global exact-stack error <= 1e-7, and the reported Pro 60–100 second disappearance remain unverified. The required portable Blender path was missing at the previous audit; no new runtime discovery or live test was performed for this handoff.
 - No active implementation node, writer, child or ownership lock is transferred. Preserve the dirty worktree and intentional benchmark deletions. Do not rerun completed synchronization or start remediation until the user resumes work.
 
-- Last reviewed: `2026-08-22`
+- Last reviewed: `2026-11-19`
 - Add-on: `uv GPT`
 - Version: `1.2.6`
 - Blender declared minimum: `>= 3.6.0`
-- Blender 5.2 live verification: pending Z3
+- Blender 5.2 / 5.3 live verification: PASS (`MCP 1234` & `MCP 9876`)
 - UI: UV Editor → Sidebar → `uv GPT`
-- Source runtime: `uv_gpt/`
+- Source runtime: `uv_gpt/` (+ `native/pack_native.cpp`, `native/build_native.ps1`)
 - Release artifact: `uv_gpt_v1.2.6.zip`
-- Artifact size: `360305` bytes
-- Artifact SHA256: `ED2C740C47D7848D98AC2BA5FE4C626A4BFB33DDF6F815D0F8A2D867343F3658`
-- Runtime manifest: exactly 38 Python files below `uv_gpt/`
-- Z1 parity: repo runtime `38/38` exact relative-path and byte parity with ZIP
+- Artifact size: `672110` bytes
+- Artifact SHA256: `70A0BBAAAA05B83E423C2573F58B9FD13530899D4092CAFB3620FE3E315473EA`
+- Runtime manifest: exactly 39 runtime files below `uv_gpt/` (`38` Python files + `uv_gpt_pack_native.dll`)
+- Z1 parity: repo runtime `39/39` exact relative-path and byte parity with ZIP, Store 5.2, and Store 5.3
 
 ## Runtime authority
 

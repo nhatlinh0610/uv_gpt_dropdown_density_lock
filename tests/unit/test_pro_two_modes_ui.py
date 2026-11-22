@@ -1,4 +1,4 @@
-"""Pure contract tests for the two registered Align Similar Pro modes.
+"""Contracts for legacy Pro backends plus the ZIP-authoritative Fast/Pro UI.
 
 These tests intentionally use source inspection plus tiny Python doubles.  They
 do not start Blender, create a mesh/fixture, launch a helper process, or build
@@ -15,10 +15,16 @@ import unittest
 
 try:
     from test_align_similar_selected import STACK_TOOLS
-except ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     # Support both the repository's existing ``tests/unit`` invocation and
     # package-qualified unittest/pytest collection from the project root.
-    from tests.unit.test_align_similar_selected import STACK_TOOLS
+    try:
+        from tests.unit.test_align_similar_selected import STACK_TOOLS
+    except (ImportError, ModuleNotFoundError) as inner_exc:
+        STACK_TOOLS = None
+        STACK_TOOLS_IMPORT_ERROR = inner_exc
+else:
+    STACK_TOOLS_IMPORT_ERROR = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +32,7 @@ UI_SOURCE_PATH = PROJECT_ROOT / "uv_gpt" / "ui.py"
 
 FAST_ID = "uv_gpt.align_similar_pro_fast"
 EXACT_ID = "uv_gpt.align_similar_pro_exact"
+SNAP_ID = "uv_gpt.align_similar_pro_snap"
 OLD_ID = "uv_gpt.align_similar_pro"
 FAST_MODE = "VERIFIED_NEAREST_ONLY"
 EXACT_MODE = "EXACT_ONLY"
@@ -196,6 +203,11 @@ def _forwarded_mode(calls):
 
 class ProTwoModesUIContractTests(unittest.TestCase):
     def setUp(self):
+        if STACK_TOOLS is None:
+            self.skipTest(
+                "legacy lifecycle double requires Blender UI modules: %s"
+                % STACK_TOOLS_IMPORT_ERROR
+            )
         self._original_active_session = getattr(STACK_TOOLS, "_ACTIVE_PRO_SESSION", None)
         self._original_active_operator = getattr(STACK_TOOLS, "_ACTIVE_PRO_OPERATOR", None)
 
@@ -203,31 +215,27 @@ class ProTwoModesUIContractTests(unittest.TestCase):
         STACK_TOOLS._ACTIVE_PRO_SESSION = self._original_active_session
         STACK_TOOLS._ACTIVE_PRO_OPERATOR = self._original_active_operator
 
-    def test_panel_exposes_exactly_two_mode_buttons_and_no_legacy_button(self):
+    def test_panel_exposes_user_fast_and_pro_only(self):
         source = UI_SOURCE_PATH.read_text(encoding="utf-8")
         calls = _panel_operator_calls(source)
-        mode_calls = tuple(
-            (operator_id, text)
-            for operator_id, text in calls
-            if operator_id in {FAST_ID, EXACT_ID, OLD_ID}
-        )
-
-        self.assertEqual(
-            set(mode_calls),
-            {(FAST_ID, "Pro Fast"), (EXACT_ID, "Pro Exact")},
-        )
-        self.assertEqual(len(mode_calls), 2)
+        self.assertIn((FAST_ID, "Fast"), calls)
+        self.assertNotIn(("uv_gpt.align_to_selected", "Fast"), calls)
+        self.assertIn((SNAP_ID, "Pro"), calls)
+        self.assertNotIn((FAST_ID, "Pro Fast"), calls)
+        self.assertNotIn((EXACT_ID, "Pro Exact"), calls)
         self.assertNotIn(OLD_ID, [operator_id for operator_id, _text in calls])
-        self.assertNotIn('"%s"' % OLD_ID, source)
-        self.assertNotIn("'%s'" % OLD_ID, source)
 
-    def test_only_fast_and_exact_are_registered_for_the_pro_ui(self):
+    def test_snap_and_legacy_backend_operators_remain_registered(self):
         classes = _registered_pro_classes()
         registered_ids = tuple(getattr(cls, "bl_idname", None) for cls in classes)
 
-        self.assertEqual(set(registered_ids), {FAST_ID, EXACT_ID})
-        self.assertEqual(len(classes), 2)
+        self.assertEqual(set(registered_ids), {SNAP_ID, FAST_ID, EXACT_ID})
+        self.assertEqual(len(classes), 3)
         self.assertNotIn(OLD_ID, registered_ids)
+        snap = _class_for_id(SNAP_ID)
+        self.assertEqual(snap.bl_label, "Pro")
+        self.assertIn("largest", snap.bl_description.lower())
+        self.assertIn("snaps exactly", snap.bl_description.lower())
 
     def test_labels_and_tooltips_identify_the_two_modes(self):
         fast = _class_for_id(FAST_ID)

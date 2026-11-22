@@ -194,7 +194,8 @@ def _settings():
     settings.margin = 0.01
     settings.rotation_mode = "NONE"
     settings.pack_preserve_stacks = False
-    settings.pack_selected_lock_density = False
+    settings.pack_selected_lock_density = False  # legacy compatibility
+    settings.pack_selected_keep_current_scale_v2 = False
     return settings
 
 

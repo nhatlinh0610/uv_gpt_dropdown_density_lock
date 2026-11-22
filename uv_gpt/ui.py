@@ -1,3 +1,4 @@
+import sys
 import bpy
 
 from . import quick_reinstall_tools, tdensity_presets, texel_density
@@ -62,15 +63,27 @@ def draw_uv_gpt_panel(layout, context):
         box.prop(settings, "margin")
         box.prop(settings, "rotation_mode")
         box.prop(settings, "pack_selected_keep_current_scale_v2")
-        box.prop(settings, "pack_preserve_stacks")
+        box.prop(settings, "pack_lock_overlapping")
+        if settings.pack_lock_overlapping == "EXACT":
+            box.prop(settings, "pack_preserve_stacks")
         row = box.row(align=True)
         row.operator("uv_gpt.pack_selected")
         row.operator("uv_gpt.pack_whole_mesh")
-        row = box.row(align=True)
-        row.operator("uv_gpt.pack_symmetry", text="Pack Symmetry")
-        row.prop_enum(settings, "symmetry_axis", "U_HALF", text="U")
-        row.prop_enum(settings, "symmetry_axis", "V_HALF", text="V")
-        box.operator("uv_gpt.center_selected")
+        pack_mod = sys.modules.get(f"{__package__}.pack_tools" if __package__ else "pack_tools")
+        report = getattr(pack_mod, "_LAST_PACK_V2_REPORT", None) or {}
+        report_text = str(report.get("text") or "")
+        if report_text:
+            icon = (
+                "CHECKMARK"
+                if report.get("ok") is True
+                else "ERROR"
+                if report.get("ok") is False
+                else "TIME"
+            )
+            box.label(text=report_text, icon=icon)
+        warn_text = str(report.get("warn") or "")
+        if warn_text:
+            box.label(text=warn_text, icon="INFO")
 
     box = _section(layout, settings, "ui_show_texel_density", "Density")
     if box:
@@ -82,11 +95,9 @@ def draw_uv_gpt_panel(layout, context):
         box.prop(settings, "input_unit")
         box.prop(settings, "target_value")
         row = box.row(align=True)
-        row.operator("uv_gpt.square_selected_face_td", text="Square Face")
-        row.operator("uv_gpt.square_face_apply_td_whole_mesh", text="Grid Mesh")
-        row = box.row(align=True)
-        row.operator("uv_gpt.show_selected_td", text="Show Selected")
-        row.operator("uv_gpt.show_all_td", text="Show All")
+        row.prop(settings, "small_uv_percent", text="Max %")
+        row.operator("uv_gpt.select_small_uv_by_percent", text="Select Small UV")
+        box.operator("uv_gpt.show_all_td", text="Show All")
         box.operator("uv_gpt.set_target_from_selected", text="Target From Selected")
         row = box.row(align=True)
         row.operator("uv_gpt.apply_td_selected", text="Apply Selected")
@@ -121,12 +132,6 @@ def draw_uv_gpt_panel(layout, context):
         box.prop(settings, "show_area_percent")
         box.prop(settings, "show_texel_density")
         box.operator("uv_gpt.refresh_overlay")
-
-    box = _section(layout, settings, "ui_show_uv_map", "UV Map")
-    if box:
-        box.prop(settings, "active_uv_map")
-        box.operator("uv_gpt.duplicate_to_bake_optimized")
-        box.prop(settings, "duplicate_before_operations")
 
 
 def _is_uv_gpt_image_editor_context(context):

@@ -1370,6 +1370,44 @@ _ACTIVE_PACK_V2_JOB = None
 _PACK_V2_TIMER_RUNNING = False
 _PACK_V2_TIMER_INTERVAL = 0.06
 _PACK_V2_WAIT_INTERVAL = 0.20
+_LAST_PACK_V2_REPORT = {"ok": None, "text": "", "warn": ""}
+
+
+def _redraw_uv_editors():
+    try:
+        wm = getattr(bpy.context, "window_manager", None)
+        if wm is None:
+            return
+        for win in getattr(wm, "windows", ()):
+            screen = getattr(win, "screen", None)
+            if screen is None:
+                continue
+            for area in getattr(screen, "areas", ()):
+                if getattr(area, "type", None) == "IMAGE_EDITOR":
+                    area.tag_redraw()
+    except Exception:
+        pass
+
+
+def _set_last_pack_v2_report(ok, text, warn=""):
+    _LAST_PACK_V2_REPORT["ok"] = ok
+    _LAST_PACK_V2_REPORT["text"] = str(text or "")
+    _LAST_PACK_V2_REPORT["warn"] = str(warn or "")
+    _redraw_uv_editors()
+
+
+def _show_pack_v2_popup(title, message, icon="INFO"):
+    try:
+        wm = getattr(bpy.context, "window_manager", None)
+        if wm is None or not hasattr(wm, "popup_menu"):
+            return
+
+        def _draw(self, _ctx):
+            self.layout.label(text=str(message)[:140])
+
+        wm.popup_menu(_draw, title=str(title), icon=icon)
+    except Exception:
+        pass
 
 
 def _pack_v2_face_world_area(obj, face):
@@ -1429,6 +1467,15 @@ def _pack_v2_capture_snapshot(context, mode):
     max_v = max(point[1] for point in points)
     center = ((min_u + max_u) * 0.5, (min_v + max_v) * 0.5)
     axis_kind = "V" if settings.symmetry_axis == "V_HALF" else "U"
+    lock_mode = str(getattr(settings, "pack_lock_overlapping", "ANY")).upper()
+    if lock_mode == "OFF":
+        preserve_stacks = False
+    elif lock_mode == "ANY":
+        preserve_stacks = True
+    else:
+        preserve_stacks = bool(settings.pack_preserve_stacks)
+        if not preserve_stacks:
+            lock_mode = "OFF"
     snapshot = {
         "schema": "pack-v2-snapshot-v1",
         "faces": tuple(faces),
@@ -1437,7 +1484,8 @@ def _pack_v2_capture_snapshot(context, mode):
             "mode": str(mode),
             "margin": max(0.0, float(settings.margin)),
             "rotation_mode": str(settings.rotation_mode),
-            "preserve_stacks": bool(settings.pack_preserve_stacks),
+            "preserve_stacks": preserve_stacks,
+            "lock_overlapping": lock_mode,
             "scale_to_fit": not (
                 mode == "selected" and bool(settings.pack_selected_keep_current_scale_v2)
             ),
@@ -1525,7 +1573,9 @@ def _pack_v2_launch_thread(job):
         job["state"] = "ready_apply"
     except BaseException as exc:
         if not job.get("cancelled"):
-            job["error"] = "%s: %s" % (type(exc).__name__, str(exc))
+            msg = str(exc)
+            prefix = f"{type(exc).__name__}: "
+            job["error"] = msg if msg.startswith(prefix) else f"{prefix}{msg}"
             job["state"] = "failed"
 
 
@@ -1649,7 +1699,7 @@ def _pack_v2_apply_result(job):
         if not _pack_v2_snapshot_unchanged(job, bm, uv_layer):
             return "changed"
         writes = tuple((job.get("result") or {}).get("writes", ()))
-        staged = []
+        staged_records = []
         seen = set()
         allowed = job.get("allowed_write_keys")
         if allowed is None:
@@ -1672,7 +1722,36 @@ def _pack_v2_apply_result(job):
             if not math.isfinite(u) or not math.isfinite(v):
                 return "invalid"
             seen.add(key)
-            staged.append((loops[local_index], (u, v)))
+            staged_records.append((face_index, local_index, u, v))
+        # If Blender's Edit/Global undo stack has no baseline entry yet (e.g.
+        # packing immediately after entering Edit Mode), capture the pre-pack
+        # state before mutating BMesh so one Ctrl+Z restores pre-pack UVs.
+        ed_ops = getattr(getattr(bpy, "ops", None), "ed", None)
+        undo_op = getattr(ed_ops, "undo", None)
+        undo_push_op = getattr(ed_ops, "undo_push", None)
+        did_pre_push = False
+        if callable(undo_push_op) and callable(getattr(undo_op, "poll", None)):
+            try:
+                if not undo_op.poll():
+                    undo_push_op(message="uv GPT Pre-Pack")
+                    did_pre_push = True
+            except Exception:
+                did_pre_push = False
+        if did_pre_push:
+            bm = bmesh.from_edit_mesh(obj.data)
+            bm.faces.ensure_lookup_table()
+            bm.faces.index_update()
+            bm.edges.ensure_lookup_table()
+            bm.edges.index_update()
+            bm.verts.ensure_lookup_table()
+            bm.verts.index_update()
+            uv_layer = bm.loops.layers.uv.get(job["uv_map_name"])
+            if uv_layer is None:
+                return "invalid"
+        staged = [
+            (tuple(bm.faces[face_index].loops)[local_index], (u, v))
+            for face_index, local_index, u, v in staged_records
+        ]
         for loop, point in staged:
             loop[uv_layer].uv = point
         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
@@ -1714,13 +1793,17 @@ def _pack_v2_background_timer():
     if not _pack_v2_source_valid(job):
         job["error"] = "Source object or mesh was removed/replaced."
         job["state"] = "discarded"
+        _set_last_pack_v2_report(False, job["error"])
         _pack_v2_finish_job(job, "source_invalid", job["error"])
+        _show_pack_v2_popup("uv GPT Pack Cancelled", job["error"], icon="INFO")
         _PACK_V2_TIMER_RUNNING = False
         return None
     _pack_v2_update_progress(job)
     if job.get("state") == "failed":
         print("UV GPT Pack V2 failed:", job.get("error"))
+        _set_last_pack_v2_report(False, str(job.get("error") or "Pack V2 failed."))
         _pack_v2_finish_job(job, "failed", job.get("error"))
+        _show_pack_v2_popup("uv GPT Pack Failed", str(job.get("error") or "Pack V2 failed."), icon="ERROR")
         _PACK_V2_TIMER_RUNNING = False
         return None
     if job.get("state") != "ready_apply":
@@ -1730,14 +1813,24 @@ def _pack_v2_background_timer():
     state = _pack_v2_apply_result(job)
     if state == "applied":
         result = job.get("result") or {}
+        mov = int(result.get("movable_count", 0) or 0)
+        sc = float(result.get("scale", 1.0) or 1.0)
+        cov = float(result.get("coverage_pct", 0.0) or 0.0)
+        st = int(result.get("stack_followers", 0) or 0)
+        ov = int(result.get("overlap_followers", 0) or 0)
+        opts = (job.get("snapshot") or {}).get("options") or {}
+        cov_txt = f" | {cov:.1f}%" if cov > 0.0 else ""
+        summary = f"Pack: {mov} isl | {sc:.3f}x{cov_txt} | {st} st, {ov} ov"
+        warn = ""
+        if ov > 0 and mov > 2 and ov * 2 >= mov:
+            warn = f"{ov}/{mov} locked overlap -> switch Exact/Off to unpack"
+        elif opts.get("mode") == "selected" and not bool(opts.get("scale_to_fit", True)):
+            warn = "Keep Current Scale is ON (1.0x) - uncheck to maximize fill"
         print(
-            "UV GPT Pack V2 applied: %s island(s), scale %.6f, exact stack followers %s."
-            % (
-                result.get("movable_count", 0),
-                float(result.get("scale", 1.0) or 1.0),
-                result.get("stack_followers", 0),
-            )
+            "UV GPT Pack V2 applied: %s island(s), scale %.6f, coverage %.2f%%, exact stack followers %s, locked overlap followers %s."
+            % (mov, sc, cov, st, ov)
         )
+        _set_last_pack_v2_report(True, summary, warn=warn)
         _pack_v2_finish_job(job, "applied")
         _PACK_V2_TIMER_RUNNING = False
         return None
@@ -1745,7 +1838,9 @@ def _pack_v2_background_timer():
         job["error"] = "Source changed or worker result was invalid."
         job["state"] = "discarded"
         print("UV GPT Pack V2 discarded: source UV/topology changed during background work.")
+        _set_last_pack_v2_report(False, job["error"])
         _pack_v2_finish_job(job, state, job["error"])
+        _show_pack_v2_popup("uv GPT Pack Discarded", job["error"], icon="INFO")
         _PACK_V2_TIMER_RUNNING = False
         return None
     return _PACK_V2_WAIT_INTERVAL
@@ -1814,6 +1909,7 @@ def _pack_v2_start_job(context, mode):
     )
     job["thread"] = thread
     _ACTIVE_PACK_V2_JOB = job
+    _set_last_pack_v2_report(None, f"Packing ({mode})...")
     thread.start()
     _pack_v2_update_progress(job)
     _ensure_pack_v2_timer()
