@@ -77,7 +77,7 @@ class UVGPT_Settings(PropertyGroup):
 
     margin: FloatProperty(name="Margin", default=0.003, min=0.0, precision=4)
     rotation_mode: EnumProperty(
-        name="Rotation Mode",
+        name="Rotate",
         items=(
             ("NONE", "None", "Keep current UV island orientations"),
             ("ROT_90", "90 deg", "Rotate movable islands by +90 deg before packing"),
@@ -125,7 +125,7 @@ class UVGPT_Settings(PropertyGroup):
         default=True,
     )
     pack_lock_overlapping: EnumProperty(
-        name="Lock Overlapping",
+        name="Overlap",
         description=(
             "Keep overlapping UV islands locked together during Pack "
             "(Any Overlapping preserves both exact stacks and heterogeneous/partial overlaps)"
@@ -157,7 +157,7 @@ class UVGPT_Settings(PropertyGroup):
     )
 
     texture_size_mode: EnumProperty(
-        name="Texture Size",
+        name="Texture",
         items=(
             ("1024", "1024", ""),
             ("2048", "2048", ""),
@@ -168,7 +168,7 @@ class UVGPT_Settings(PropertyGroup):
     )
     custom_texture_size: IntProperty(name="Custom", default=2048, min=1)
     display_unit: EnumProperty(
-        name="Display Unit",
+        name="Show Unit",
         items=(
             ("PX_CM", "px/cm", ""),
             ("PX_UNIT", "px/unit", ""),
@@ -184,7 +184,7 @@ class UVGPT_Settings(PropertyGroup):
         ),
         default="PX_CM",
     )
-    target_value: FloatProperty(name="Target Value", default=40.0, min=0.0001, precision=3)
+    target_value: FloatProperty(name="Target", default=40.0, min=0.0001, precision=3)
     presets: CollectionProperty(type=UVGPT_TDensityPreset)
     active_preset_index: IntProperty(name="Preset", default=0, min=0)
     default_presets_loaded: BoolProperty(default=False, options={"HIDDEN"})
@@ -230,7 +230,7 @@ class UVGPT_Settings(PropertyGroup):
     stack_match_scale: BoolProperty(name="Match Scale", default=True)
     stack_allow_flipping: BoolProperty(name="Allow Flipping", default=False)
     stack_similarity_tolerance: FloatProperty(
-        name="Similarity Tolerance",
+        name="Tolerance",
         default=0.01,
         min=0.0,
         precision=4,
@@ -265,7 +265,7 @@ class UVGPT_Settings(PropertyGroup):
     ui_show_stack: BoolProperty(name="Stack", default=False)
     ui_show_overlay: BoolProperty(name="Overlay", default=False)
     small_uv_percent: FloatProperty(
-        name="Small UV %",
+        name="Max %",
         description="Select UV islands whose UV area is at or below this percentage of a 0-1 UV tile",
         default=0.5,
         min=0.001,

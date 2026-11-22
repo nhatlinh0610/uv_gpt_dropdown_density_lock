@@ -1,5 +1,16 @@
 # Trạng thái hiện tại — uv GPT
 
+## Release v1.2.8 (Smart Zero-Truncation UI & Bottleneck Island Detector) — 2026-11-23
+
+- **UI Redesign (`uv_gpt/ui.py`, `uv_gpt/properties.py`)**:
+  - Shortened split-property labels (`Rotate`, `Overlap`, `Texture`, `Show Unit`, `Target`, `Tolerance`, `Max %`) so controls never truncate on a standard ~240px sidebar.
+  - Added section icons, live header badges (`52.5%`, `2048px`, `13 st`), active UV map header badge, inline eyedropper for `Target`, compact 3-pill `# / % / TD` Overlay toggles, and prominent primary action rows.
+  - Replaced single-line truncated Pack summary with a 2-line status card + wrapped Bottleneck warning card (`1 island hits 100% tile (1120f)`).
+- **Bottleneck Detector (`uv_gpt/pack_v2_core.py`, `uv_gpt/pack_tools.py`)**:
+  - `solve_pack` reports `unit_count`, `bottleneck_span_pct`, `bottleneck_face_count`, `bottleneck_faces`.
+  - Added `uv_gpt.select_pack_bottleneck` (`Select Bottleneck (Nf)`) so users can 1-click select the single oversized island capping Pack scale and split its UV seam.
+- **Canonical ZIP `uv_gpt_v1.2.8.zip`**: **`675325` bytes**, SHA256 `61E3083B5FFFA530E4A4378A168D93FF748E3D8D4B53BD5DC4FA4F892B8434BF`, `39` runtime files.
+
 ## Release v1.2.7 (Min-Square-Span Rotation & Valid-Layout Non-Regression) — 2026-11-23
 
 - **Rollback Baseline**: `v1.2.6` checkpointed at git commit `825ad2ee829c7f8eb3148ef7a8169e426dc1c61c`, tag `v1.2.6-good-baseline` (pushed to `origin/main`).

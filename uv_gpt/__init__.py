@@ -1,7 +1,7 @@
 bl_info = {
     "name": "uv GPT",
     "author": "OpenAI Codex",
-    "version": (1, 2, 7),
+    "version": (1, 2, 8),
     "blender": (3, 6, 0),
     "location": "UV Editor > Sidebar > uv GPT",
     "description": "uv GPT: UV-only tools for optimizing already-unwrapped bake layouts.",

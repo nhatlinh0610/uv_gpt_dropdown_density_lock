@@ -50,7 +50,7 @@ def load_module(fake_bpy):
 def load_ui(fake_bpy, quick_module):
     package = types.ModuleType("uv_gpt")
     package.__path__ = [str(PROJECT_ROOT / "uv_gpt")]
-    package.ADDON_VERSION = "1.2.7"
+    package.ADDON_VERSION = "1.2.8"
     package_modules = {
         "uv_gpt": package,
         "uv_gpt.quick_reinstall_tools": quick_module,

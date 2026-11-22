@@ -3704,6 +3704,10 @@ def solve_pack(snapshot: dict[str, Any], progress_cb=None) -> dict[str, Any]:
     static_shapes=[i.boundary_loops for i in static]
 
     writes=[]; pair_count=single_count=0; stack_followers=0; overlap_followers=0
+    unit_count = 0
+    bottleneck_span_pct = 0.0
+    bottleneck_face_count = 0
+    bottleneck_faces = ()
     cover_shapes = [
         sh for sh in static_shapes
         if (b := shape_bounds(sh)) and b[1] > 0.0 and b[0] < 1.0 and b[3] > 0.0 and b[2] < 1.0
@@ -3799,14 +3803,26 @@ def solve_pack(snapshot: dict[str, Any], progress_cb=None) -> dict[str, Any]:
                 for unit in units: _prepare_unit(unit,rotation_mode=rotation_mode,density_scale=1.0)
             scale,placements=_solve_general(units,static_shapes,margin,scale_to_fit,progress_cb)
         if placements is None: raise RuntimeError("Pack V2 could not find a collision-free 0-1 layout")
+        unit_count = len(units)
+        tile_span = max(1.0e-9, 1.0 - 2.0 * margin)
+        max_span = 0.0
+        max_unit = None
         for unit in units:
             pl = placements[unit.key]
             writes.extend(_emit_unit_writes(unit, scale, pl))
             px, py = float(pl[0]), float(pl[1])
             var = pl[2] if len(pl) >= 3 else (unit.variants[0] if unit.variants else None)
             if var is not None:
+                placed_span = max(float(var.width), float(var.height)) * float(scale)
+                if placed_span > max_span:
+                    max_span = placed_span
+                    max_unit = unit
                 for sh_local in var.member_shapes:
                     cover_shapes.append(transform_shape(sh_local, scale=scale, tx=px, ty=py))
+        if max_unit is not None and max_span > 0.0:
+            bottleneck_span_pct = round(100.0 * max_span / tile_span, 1)
+            bottleneck_face_count = len(max_unit.representative.face_key)
+            bottleneck_faces = tuple(int(fi) for fi in max_unit.representative.face_key)
 
     coverage_pct = _estimate_tile_coverage_pct(cover_shapes, grid=160)
     _progress(progress_cb,stage="done",percent=100.0,done=len(movable),total=len(movable))
@@ -3816,10 +3832,14 @@ def solve_pack(snapshot: dict[str, Any], progress_cb=None) -> dict[str, Any]:
         "writes":tuple(writes),
         "movable_count":len(movable),
         "static_count":len(static),
+        "unit_count":unit_count,
         "scale":float(scale),
         "coverage_pct":float(coverage_pct),
         "stack_followers":stack_followers,
         "overlap_followers":overlap_followers,
+        "bottleneck_span_pct":float(bottleneck_span_pct),
+        "bottleneck_face_count":int(bottleneck_face_count),
+        "bottleneck_faces":bottleneck_faces,
         "pair_count":pair_count,
         "single_count":single_count,
         "elapsed_ms":(time.perf_counter()-started)*1000.0,

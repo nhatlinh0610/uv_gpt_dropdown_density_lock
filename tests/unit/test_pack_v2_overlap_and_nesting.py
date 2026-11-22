@@ -1027,6 +1027,17 @@ class PackV2OverlapAndNestingTests(unittest.TestCase):
         )
         res = pack_v2_core.solve_pack(snap)
         self.assertGreaterEqual(res["scale"], 1.0 - 1.0e-6)
+        self.assertEqual(res["unit_count"], 2)
+        self.assertGreater(res["bottleneck_span_pct"], 95.0)
+        self.assertEqual(res["bottleneck_face_count"], 1)
+        self.assertEqual(len(res["bottleneck_faces"]), 1)
+
+    def test_bottleneck_selector_operator_and_ui_wired(self):
+        pack_tools_text = (UV_GPT_DIR / "pack_tools.py").read_text(encoding="utf-8")
+        ui_text = (UV_GPT_DIR / "ui.py").read_text(encoding="utf-8")
+        self.assertIn("class UVGPT_OT_select_pack_bottleneck", pack_tools_text)
+        self.assertIn('bl_idname = "uv_gpt.select_pack_bottleneck"', pack_tools_text)
+        self.assertIn("uv_gpt.select_pack_bottleneck", ui_text)
 
 
 if __name__ == "__main__":

@@ -1370,7 +1370,21 @@ _ACTIVE_PACK_V2_JOB = None
 _PACK_V2_TIMER_RUNNING = False
 _PACK_V2_TIMER_INTERVAL = 0.06
 _PACK_V2_WAIT_INTERVAL = 0.20
-_LAST_PACK_V2_REPORT = {"ok": None, "text": "", "warn": ""}
+_LAST_PACK_V2_REPORT = {
+    "ok": None,
+    "text": "",
+    "warn": "",
+    "coverage_pct": 0.0,
+    "scale": 0.0,
+    "movable_count": 0,
+    "unit_count": 0,
+    "stack_followers": 0,
+    "overlap_followers": 0,
+    "bottleneck_span_pct": 0.0,
+    "bottleneck_face_count": 0,
+    "bottleneck_faces": (),
+    "object_name": "",
+}
 
 
 def _redraw_uv_editors():
@@ -1389,10 +1403,26 @@ def _redraw_uv_editors():
         pass
 
 
-def _set_last_pack_v2_report(ok, text, warn=""):
+def _set_last_pack_v2_report(ok, text, warn="", metrics=None):
     _LAST_PACK_V2_REPORT["ok"] = ok
     _LAST_PACK_V2_REPORT["text"] = str(text or "")
     _LAST_PACK_V2_REPORT["warn"] = str(warn or "")
+    defaults = {
+        "coverage_pct": 0.0,
+        "scale": 0.0,
+        "movable_count": 0,
+        "unit_count": 0,
+        "stack_followers": 0,
+        "overlap_followers": 0,
+        "bottleneck_span_pct": 0.0,
+        "bottleneck_face_count": 0,
+        "bottleneck_faces": (),
+        "object_name": "",
+    }
+    if isinstance(metrics, dict):
+        defaults.update(metrics)
+    for key, val in defaults.items():
+        _LAST_PACK_V2_REPORT[key] = val
     _redraw_uv_editors()
 
 
@@ -1818,6 +1848,10 @@ def _pack_v2_background_timer():
         cov = float(result.get("coverage_pct", 0.0) or 0.0)
         st = int(result.get("stack_followers", 0) or 0)
         ov = int(result.get("overlap_followers", 0) or 0)
+        unit_count = int(result.get("unit_count", 0) or 0)
+        bn_span = float(result.get("bottleneck_span_pct", 0.0) or 0.0)
+        bn_cnt = int(result.get("bottleneck_face_count", 0) or 0)
+        bn_faces = tuple(int(i) for i in (result.get("bottleneck_faces") or ()))
         opts = (job.get("snapshot") or {}).get("options") or {}
         cov_txt = f" | {cov:.1f}%" if cov > 0.0 else ""
         summary = f"Pack: {mov} isl | {sc:.3f}x{cov_txt} | {st} st, {ov} ov"
@@ -1826,11 +1860,29 @@ def _pack_v2_background_timer():
             warn = f"{ov}/{mov} locked overlap -> switch Exact/Off to unpack"
         elif opts.get("mode") == "selected" and not bool(opts.get("scale_to_fit", True)):
             warn = "Keep Current Scale is ON (1.0x) - uncheck to maximize fill"
+        elif bn_span >= 96.0 and 0.0 < cov < 68.0 and (unit_count >= 2 or mov >= 2) and bn_cnt > 0:
+            warn = f"1 island hits {bn_span:.0f}% tile ({bn_cnt}f) - cut seam to scale up"
         print(
             "UV GPT Pack V2 applied: %s island(s), scale %.6f, coverage %.2f%%, exact stack followers %s, locked overlap followers %s."
             % (mov, sc, cov, st, ov)
         )
-        _set_last_pack_v2_report(True, summary, warn=warn)
+        _set_last_pack_v2_report(
+            True,
+            summary,
+            warn=warn,
+            metrics={
+                "coverage_pct": cov,
+                "scale": sc,
+                "movable_count": mov,
+                "unit_count": unit_count,
+                "stack_followers": st,
+                "overlap_followers": ov,
+                "bottleneck_span_pct": bn_span,
+                "bottleneck_face_count": bn_cnt,
+                "bottleneck_faces": bn_faces,
+                "object_name": str(job.get("object_name") or ""),
+            },
+        )
         _pack_v2_finish_job(job, "applied")
         _PACK_V2_TIMER_RUNNING = False
         return None
@@ -1985,10 +2037,50 @@ class UVGPT_OT_pack_whole_mesh(bpy.types.Operator):
         return self._start_detached(context)
 
 
+class UVGPT_OT_select_pack_bottleneck(bpy.types.Operator):
+    bl_idname = "uv_gpt.select_pack_bottleneck"
+    bl_label = "Select Bottleneck Island"
+    bl_description = "Select the single largest UV island limiting Pack scale so you can split its seam"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = getattr(context, "edit_object", None) or getattr(context, "active_object", None)
+        if not obj or obj.type != "MESH" or obj.mode != "EDIT":
+            self.report({"INFO"}, "Enter Edit Mode on a mesh object first.")
+            return {"CANCELLED"}
+        bn_faces = set(int(i) for i in (_LAST_PACK_V2_REPORT.get("bottleneck_faces") or ()))
+        if not bn_faces:
+            self.report({"INFO"}, "No bottleneck island recorded from the last Pack.")
+            return {"CANCELLED"}
+        bm = bmesh.from_edit_mesh(obj.data)
+        uv_layer = bm.loops.layers.uv.active
+        bm.faces.ensure_lookup_table()
+        selected_count = 0
+        use_sync = bool(getattr(context.scene.tool_settings, "use_uv_select_sync", False))
+        for face in bm.faces:
+            is_target = face.index in bn_faces and not face.hide
+            if is_target:
+                selected_count += 1
+            if use_sync:
+                face.select = is_target
+            elif uv_layer is not None:
+                for loop in face.loops:
+                    loop[uv_layer].select = is_target
+                    if hasattr(loop[uv_layer], "select_edge"):
+                        loop[uv_layer].select_edge = is_target
+                if is_target:
+                    face.select = True
+        bm.select_flush(True)
+        bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+        self.report({"INFO"}, f"Selected bottleneck island ({selected_count} faces).")
+        return {"FINISHED"}
+
+
 classes = (
     UVGPT_OT_pack_selected,
     UVGPT_OT_pack_symmetry,
     UVGPT_OT_pack_whole_mesh,
+    UVGPT_OT_select_pack_bottleneck,
 )
 
 
